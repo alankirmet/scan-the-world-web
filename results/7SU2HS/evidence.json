@@ -1,0 +1,378 @@
+{
+  "schema": "scan-the-world/evidence v2",
+  "frames_dir": "/home/hatch/workspace/scan-the-world/test-app/work/jobs/scan-7SU2HS/frames",
+  "paper": "LETTER",
+  "n_frames": 24,
+  "n_frames_kept_after_gates": 24,
+  "gates": [
+    {
+      "frame": "frame_000.jpg",
+      "sharpness": 598.56,
+      "exposure_mean": 149.39,
+      "highlight_frac": 0.0031,
+      "shadow_frac": 0.0252,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_001.jpg",
+      "sharpness": 591.06,
+      "exposure_mean": 150.54,
+      "highlight_frac": 0.0031,
+      "shadow_frac": 0.0244,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_002.jpg",
+      "sharpness": 566.47,
+      "exposure_mean": 152.29,
+      "highlight_frac": 0.0028,
+      "shadow_frac": 0.0231,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_003.jpg",
+      "sharpness": 402.76,
+      "exposure_mean": 152.95,
+      "highlight_frac": 0.0024,
+      "shadow_frac": 0.0238,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_004.jpg",
+      "sharpness": 294.57,
+      "exposure_mean": 154.3,
+      "highlight_frac": 0.0021,
+      "shadow_frac": 0.026,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_005.jpg",
+      "sharpness": 154.51,
+      "exposure_mean": 142.07,
+      "highlight_frac": 0.0021,
+      "shadow_frac": 0.0015,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_006.jpg",
+      "sharpness": 113.01,
+      "exposure_mean": 159.49,
+      "highlight_frac": 0.0026,
+      "shadow_frac": 0.0008,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_007.jpg",
+      "sharpness": 80.51,
+      "exposure_mean": 153.42,
+      "highlight_frac": 0.0024,
+      "shadow_frac": 0.0157,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_008.jpg",
+      "sharpness": 180.26,
+      "exposure_mean": 133.74,
+      "highlight_frac": 0.001,
+      "shadow_frac": 0.1003,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_009.jpg",
+      "sharpness": 176.29,
+      "exposure_mean": 140.93,
+      "highlight_frac": 0.0011,
+      "shadow_frac": 0.0368,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_010.jpg",
+      "sharpness": 285.59,
+      "exposure_mean": 142.11,
+      "highlight_frac": 0.0009,
+      "shadow_frac": 0.0246,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_011.jpg",
+      "sharpness": 223.26,
+      "exposure_mean": 144.52,
+      "highlight_frac": 0.001,
+      "shadow_frac": 0.017,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_012.jpg",
+      "sharpness": 273.07,
+      "exposure_mean": 142.83,
+      "highlight_frac": 0.0008,
+      "shadow_frac": 0.0138,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_013.jpg",
+      "sharpness": 313.63,
+      "exposure_mean": 142.6,
+      "highlight_frac": 0.0007,
+      "shadow_frac": 0.0104,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_014.jpg",
+      "sharpness": 269.47,
+      "exposure_mean": 142.36,
+      "highlight_frac": 0.0008,
+      "shadow_frac": 0.0118,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_015.jpg",
+      "sharpness": 111.48,
+      "exposure_mean": 141.68,
+      "highlight_frac": 0.0011,
+      "shadow_frac": 0.0208,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_016.jpg",
+      "sharpness": 146.67,
+      "exposure_mean": 151.94,
+      "highlight_frac": 0.0032,
+      "shadow_frac": 0.0104,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_017.jpg",
+      "sharpness": 98.43,
+      "exposure_mean": 160.79,
+      "highlight_frac": 0.0065,
+      "shadow_frac": 0.0011,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_018.jpg",
+      "sharpness": 272.96,
+      "exposure_mean": 156.2,
+      "highlight_frac": 0.0051,
+      "shadow_frac": 0.0048,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_019.jpg",
+      "sharpness": 130.63,
+      "exposure_mean": 143.92,
+      "highlight_frac": 0.0072,
+      "shadow_frac": 0.0063,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_020.jpg",
+      "sharpness": 309.74,
+      "exposure_mean": 138.98,
+      "highlight_frac": 0.0059,
+      "shadow_frac": 0.0047,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_021.jpg",
+      "sharpness": 245.49,
+      "exposure_mean": 133.58,
+      "highlight_frac": 0.0026,
+      "shadow_frac": 0.0219,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_022.jpg",
+      "sharpness": 128.75,
+      "exposure_mean": 152.43,
+      "highlight_frac": 0.0037,
+      "shadow_frac": 0.0054,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "frame": "frame_023.jpg",
+      "sharpness": 82.34,
+      "exposure_mean": 136.08,
+      "highlight_frac": 0.0039,
+      "shadow_frac": 0.0032,
+      "passed": true,
+      "failures": []
+    }
+  ],
+  "sfm": {
+    "method": "pycolmap-global",
+    "registered": 24,
+    "images": 24,
+    "sparse_points": 2738,
+    "notes": [
+      "pycolmap 4.2.1",
+      "global mapper: 1 model(s), best registers 24/24"
+    ]
+  },
+  "evidences": [
+    {
+      "provider": "mat-sheet",
+      "method": "aruco-ransac-umeyama",
+      "scale_mm_per_unit": null,
+      "rmse_mm": null,
+      "loo_spread_rel": null,
+      "extent_mm": null,
+      "support": 0,
+      "checks": {},
+      "provenance": {
+        "reference": "printable mat (LETTER)",
+        "dictionary": "DICT_6X6_250"
+      },
+      "notes": [
+        "no ring-marker corners triangulated (mat not seen, or SfM too weak)"
+      ]
+    },
+    {
+      "provider": "ref-card",
+      "method": "card-markers-ransac-umeyama",
+      "scale_mm_per_unit": null,
+      "rmse_mm": null,
+      "loo_spread_rel": null,
+      "extent_mm": null,
+      "support": 0,
+      "checks": {},
+      "provenance": {
+        "reference": "pocket card 5x3 in (ids 50-55)",
+        "extent_design_mm": 112.8,
+        "band_note": "estimate until benchmark B2 measures the card"
+      },
+      "notes": [
+        "no card markers triangulated (card not in frame)"
+      ]
+    },
+    {
+      "provider": "cal-block",
+      "method": "block-face-markers-ransac-umeyama",
+      "scale_mm_per_unit": null,
+      "rmse_mm": null,
+      "loo_spread_rel": null,
+      "extent_mm": null,
+      "support": 0,
+      "checks": {},
+      "provenance": {},
+      "notes": [
+        "no block face-marker corners triangulated (no registered block in frame)"
+      ]
+    },
+    {
+      "provider": "coin",
+      "method": "coin-on-support-plane-multiview",
+      "scale_mm_per_unit": null,
+      "rmse_mm": null,
+      "loo_spread_rel": null,
+      "extent_mm": null,
+      "support": 24,
+      "checks": {
+        "rejected_cluster": {
+          "views": 23,
+          "diameter_iqr_rel": 0.3432
+        }
+      },
+      "provenance": {
+        "reference": "US quarter (25c)",
+        "diameter_mm": 24.26,
+        "diameter_source": "published mint specification (Sweep B table)",
+        "declared_by": "user",
+        "coin_quality_flag": "round",
+        "assumption": "coin lies flat on the subject's support surface"
+      },
+      "notes": [
+        "unseeded cluster rejected: member diameters disagree (IQR/median 34% > 10%) -- coin not reliably located without a user tap"
+      ]
+    },
+    {
+      "provider": "depth",
+      "method": "device-depth (not connected)",
+      "scale_mm_per_unit": null,
+      "rmse_mm": null,
+      "loo_spread_rel": null,
+      "extent_mm": null,
+      "support": 0,
+      "checks": {},
+      "provenance": {},
+      "notes": [
+        "no depth source in this build: browser capture exposes no depth stream; provider interface present for a native shell"
+      ]
+    }
+  ],
+  "fusion": {
+    "scale_mm_per_unit": null,
+    "primary": null,
+    "contributors": [],
+    "agreements": [],
+    "independent_check_agrees": false,
+    "conflict": false,
+    "disagreements": [],
+    "transform_model_to_mm": null
+  },
+  "label": {
+    "label": "uncalibrated",
+    "reasons": [
+      "no provider produced a scale; shape and relative geometry only"
+    ]
+  },
+  "owner_id": null,
+  "object_bbox_mm": null,
+  "outputs": {
+    "cloud_mm_ply": null,
+    "cloud_model_units_ply": "cloud_model_units.ply",
+    "dense_mesh": null,
+    "dense_note": "dense meshing not produced on this host: COLMAP PatchMatch stereo is CUDA-only and no GPU is present; sparse cloud + scaled bounding dims shipped instead (see build report)"
+  },
+  "warnings": [],
+  "timings_s": {
+    "gates_and_detection_s": 8.19,
+    "sfm_s": 362.19,
+    "providers_s": 6.52,
+    "total": 376.91
+  },
+  "blockless_tier": {
+    "grade": "BLOCKLESS_METRIC_COMPLETE",
+    "reason": "per-pose chirps on both passes covering every bundled frame",
+    "basis": {
+      "method": "phone",
+      "n_frames": 24,
+      "audio_file": true,
+      "session_present": true,
+      "baseline_failure": false,
+      "pose_chirps_emitted": 24,
+      "measurement_trains_emitted": 0,
+      "passes_with_pose_chirps": [
+        1,
+        2
+      ],
+      "frame_coverage": 1.0,
+      "ledger_decision": "recorded",
+      "visual_label": "uncalibrated"
+    },
+    "note": "internal test label \u2014 runner-side only; grades the completeness of the block-less metric evidence package, not any measurement; never user-facing"
+  }
+}
