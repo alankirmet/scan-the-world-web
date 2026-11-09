@@ -1,7 +1,7 @@
 /* Scan the World test app — app shell cache. Results are always fetched
    fresh (network only), so a newly published result appears without an
    app update. */
-const CACHE = "stw-shell-v5";
+const CACHE = "stw-shell-v6";
 const SHELL = ["./", "index.html", "style.css", "app.js", "pcm-worklet.js", "manifest.webmanifest",
                "icons/icon-192.png", "icons/icon-512.png", "icons/icon-180.png"];
 self.addEventListener("install", e => {

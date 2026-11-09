@@ -426,16 +426,16 @@ function buildManifestV3(info) {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.1 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.0", build: 3, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.1", build: 4, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     capture: {
       version: 3,
       style: "continuous orbit, two passes (level, then higher)",
       gate: {
-        definition: "port of scanner-core gates.py check_frame — native-resolution grayscale Laplacian variance + exposure/clipping checks; the gated canvas is the bundled frame",
+        definition: "port of scanner-core gates.py check_frame — native-resolution grayscale Laplacian variance + exposure/clipping checks, always computed on the native-resolution canvas; since v3.1 the bundled frame is that canvas downscaled to the frame_max_px long edge (JPEG 0.85) when the stream is larger — gate scores are computed pre-downscale, and frames_meta records the bundled dimensions",
         sharpness_min: GATE_LIMITS.SHARPNESS_MIN,
         exposure_mean_min: GATE_LIMITS.EXPOSURE_MEAN_MIN,
         exposure_mean_max: GATE_LIMITS.EXPOSURE_MEAN_MAX,
@@ -450,6 +450,7 @@ function buildManifestV3(info) {
       selection_dropped: info.selectionDropped,
       target_frames: info.targetFrames,
       cap_frames: info.capFrames,
+      frame_max_px: info.frameMaxPx != null ? info.frameMaxPx : 1600,
       started_at_epoch_ms: info.startedAtEpochMs,
       finished_at_epoch_ms: info.finishedAtEpochMs
     },
@@ -866,6 +867,8 @@ function persistLabel() {
 
 const PASS_TARGET = 12, PASS_CAP = 16;      // kept photos per pass
 const TARGET_TOTAL = 24, CAP_TOTAL = 32;    // the smart frame budget
+const FRAME_MAX_PX = 1600;                  // v3.1 bundle diet: bundled frames are capped at this long edge
+const FRAME_JPEG_QUALITY_CAPPED = 0.85;     // JPEG quality used for a frame downscaled to the cap
 const DONE_MIN = 20;                        // Done unlocks here
 const ATTEMPT_MS = 130;                     // pause between gate attempts
 const KEEP_GAP_MS = 300;                    // min spacing between keeps
@@ -990,6 +993,26 @@ function encodeCanvas(canvas) {
   return new Promise(res => canvas.toBlob(res, "image/jpeg", 0.92));
 }
 
+const bundleCanvas = document.createElement("canvas");
+// The bundled photo for a kept frame (v3.1 bundle diet): the gated
+// canvas itself when it already fits the cap, otherwise a downscaled
+// copy — aspect preserved, never upscaled — at JPEG 0.85. Gating
+// always runs on the native-resolution canvas; only the shipped copy
+// is capped. Returns the blob and the BUNDLED frame's dimensions,
+// which are what frames_meta records.
+function encodeBundleFrame(src) {
+  const w = src.width, h = src.height, longEdge = Math.max(w, h);
+  if (longEdge <= FRAME_MAX_PX) {
+    return encodeCanvas(src).then(blob => ({ blob, width: w, height: h }));
+  }
+  const s = FRAME_MAX_PX / longEdge;
+  const bw = Math.round(w * s), bh = Math.round(h * s);
+  bundleCanvas.width = bw; bundleCanvas.height = bh;
+  bundleCanvas.getContext("2d").drawImage(src, 0, 0, bw, bh);
+  return new Promise(res => bundleCanvas.toBlob(res, "image/jpeg", FRAME_JPEG_QUALITY_CAPPED))
+    .then(blob => ({ blob, width: bw, height: bh }));
+}
+
 // One gate attempt: draw the live frame once, score THOSE pixels
 // with the server's gate, and — only if they pass — encode that same
 // canvas as the bundled photo.
@@ -1022,7 +1045,8 @@ async function captureAttempt() {
     recentFailures = [];
     const now = performance.now();
     if (now - lastKeepAt < KEEP_GAP_MS || kept.length >= CAP_TOTAL) { setPrompt(); return; }
-    const blob = await encodeCanvas(gateCanvas);
+    const enc = await encodeBundleFrame(gateCanvas);
+    const blob = enc.blob;
     if (!blob || !capturing) return;
     lastKeepAt = now;
     kept.push(blob);
@@ -1033,7 +1057,7 @@ async function captureAttempt() {
       exposure_mean: Math.round(res.exposureMean * 10) / 10,
       highlight_frac: Math.round(res.highlightFrac * 10000) / 10000,
       shadow_frac: Math.round(res.shadowFrac * 10000) / 10000,
-      width: gateCanvas.width, height: gateCanvas.height,
+      width: enc.width, height: enc.height,
       captured_at_epoch_ms: grabEpoch,
       audio_offset_ms: grabCtx != null ? audioSession.offsetMs(grabCtx) : null,
       pose_chirp_audio_offset_ms: null,
@@ -1299,7 +1323,7 @@ async function finishCapture() {
     frames: frameMeta,
     stream: streamInfo, locks: lockInfo, passes: passStats,
     attempts, gateDropped, selectionDropped,
-    targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL,
+    targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
     startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
     audio: audioRecord, audioSession: audioSessionRecord, ledger
   });
@@ -1314,7 +1338,13 @@ $("btn-start").onclick = startScan;
 $("btn-cancel").onclick = () => { endCamera(); show("home"); };
 $("btn-done").onclick = finishCapture;
 
-// ---------- bundle (zip, stored entries — JPEGs don't compress) ----------
+// ---------- bundle (zip — JPEG frames stored; WAV + JSON deflated, v3.1) ----------
+// v3.1 bundle diet: JPEG frames are already compressed, so they stay
+// STORED (method 0) — that part of the old comment was right. But the
+// session WAV is raw PCM and the JSON docs are text; in v3 both were
+// stored raw too, and a 150 s WAV alone is ~14 MB. Those entries are
+// now DEFLATE-compressed (method 8), losslessly: extraction restores
+// every byte bit-identically (the proof harness hash-checks the WAV).
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
   for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c; }
@@ -1325,32 +1355,202 @@ function crc32(bytes) {
   for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
+
+// ----- raw DEFLATE (RFC 1951), platform first -----
+async function deflateRawPlatform(bytes) {
+  const cs = new CompressionStream("deflate-raw");
+  const writer = cs.writable.getWriter();
+  const reader = cs.readable.getReader();
+  const parts = [];
+  const pump = (async () => {
+    for (;;) { const r = await reader.read(); if (r.done) break; parts.push(r.value); }
+  })();
+  await writer.write(bytes);
+  await writer.close();
+  await pump;
+  let total = 0; for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+// ----- vendored raw-DEFLATE encoder (fallback compressor) -----
+// A compact fixed-Huffman DEFLATE encoder (RFC 1951), written for
+// this app, used only when the platform has no CompressionStream.
+// Greedy LZ77 (32 KB window, hash chains) + fixed Huffman codes.
+// Its output is a standard raw deflate stream; the v3.1 proof
+// round-trips it through zlib and python zipfile bit-identically.
+const DEFLATE_LEN_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const DEFLATE_LEN_EXT = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const DEFLATE_DIST_BASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const DEFLATE_DIST_EXT = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+function deflateRawVendored(bytes) {
+  const n = bytes.length;
+  const out = [];
+  let acc = 0, accBits = 0;
+  const putBits = (val, len) => {           // stream bits, LSB-first
+    acc |= val << accBits; accBits += len;
+    while (accBits >= 8) { out.push(acc & 0xFF); acc >>>= 8; accBits -= 8; }
+  };
+  const putCode = (code, len) => {          // Huffman codes go MSB-first
+    let rev = 0;
+    for (let i = 0; i < len; i++) rev = (rev << 1) | ((code >>> i) & 1);
+    putBits(rev, len);
+  };
+  const putLit = sym => {                   // fixed-Huffman literal/length codes
+    if (sym < 144) putCode(0x30 + sym, 8);
+    else if (sym < 256) putCode(0x190 + sym - 144, 9);
+    else if (sym < 280) putCode(sym - 256, 7);
+    else putCode(0xC0 + sym - 280, 8);
+  };
+  const putMatch = (len, dist) => {
+    let j;
+    if (len === 258) j = 28;
+    else { j = 0; while (j < 27 && DEFLATE_LEN_BASE[j + 1] <= len) j++; }
+    putLit(257 + j);
+    if (DEFLATE_LEN_EXT[j]) putBits(len - DEFLATE_LEN_BASE[j], DEFLATE_LEN_EXT[j]);
+    let d = 0; while (d < 29 && DEFLATE_DIST_BASE[d + 1] <= dist) d++;
+    putCode(d, 5);                          // fixed distance codes: 5 bits, code = symbol
+    if (DEFLATE_DIST_EXT[d]) putBits(dist - DEFLATE_DIST_BASE[d], DEFLATE_DIST_EXT[d]);
+  };
+  let tokens = [], tokenCount = 0;          // literal: sym >= 0; match: -len, dist
+  const flushBlock = final => {
+    putBits(final ? 1 : 0, 1); putBits(1, 2);   // BFINAL, BTYPE = fixed Huffman
+    for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t >= 0) putLit(t); else putMatch(-t, tokens[++k]);
+    }
+    putLit(256);                              // end of block
+    tokens = []; tokenCount = 0;
+  };
+  const HASH_SIZE = 1 << 15;
+  const head = new Int32Array(HASH_SIZE).fill(-1);
+  const prev = new Int32Array(Math.max(1, n)).fill(-1);
+  const hashAt = i => Math.imul((bytes[i] << 16) ^ (bytes[i + 1] << 8) ^ bytes[i + 2], 0x9E3779B1) >>> 17;
+  const insert = pos => {
+    if (pos + 2 < n) { const h = hashAt(pos); prev[pos] = head[h]; head[h] = pos; }
+  };
+  let i = 0;
+  while (i < n) {
+    let matchLen = 0, matchDist = 0;
+    if (i + 2 < n) {
+      let cand = head[hashAt(i)];
+      const maxLen = Math.min(258, n - i);
+      let tries = 0;
+      while (cand >= 0 && i - cand <= 32768 && tries++ < 32) {
+        if (matchLen === 0 || bytes[cand + matchLen] === bytes[i + matchLen]) {
+          let l = 0;
+          while (l < maxLen && bytes[cand + l] === bytes[i + l]) l++;
+          if (l >= 3 && l > matchLen) {
+            matchLen = l; matchDist = i - cand;
+            if (l >= maxLen) break;
+          }
+        }
+        cand = prev[cand];
+      }
+    }
+    if (matchLen >= 3) {
+      tokens.push(-matchLen, matchDist); tokenCount++;
+      const end = i + matchLen;
+      while (i < end) { insert(i); i++; }
+    } else {
+      tokens.push(bytes[i]); tokenCount++;
+      insert(i); i++;
+    }
+    if (tokenCount >= 16384) flushBlock(i >= n);
+  }
+  if (tokens.length || !out.length) flushBlock(true);
+  if (accBits) { out.push(acc & 0xFF); acc = 0; accBits = 0; }
+  return new Uint8Array(out);
+}
+
+// Per-blob compression results are cached: buildBundle packs twice
+// (the manifest's bundle_compression note is written between the two
+// packs) and the WAV must not be compressed twice.
+const entryCompressionCache = new WeakMap();
+function compressEntry(blob) {
+  let p = entryCompressionCache.get(blob);
+  if (!p) {
+    p = (async () => {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      if (typeof CompressionStream !== "undefined") {
+        try {
+          const data = await deflateRawPlatform(bytes);
+          return { data, method: 8, compressor: "CompressionStream" };
+        } catch (e) { /* fall through to the vendored encoder */ }
+      }
+      try {
+        const data = deflateRawVendored(bytes);
+        return { data, method: 8, compressor: "vendored" };
+      } catch (e) {
+        return { data: bytes, method: 0, compressor: null };
+      }
+    })();
+    entryCompressionCache.set(blob, p);
+  }
+  return p;
+}
+
+// Set by every makeZip call: the ACTUAL per-entry methods used and
+// the compressor that produced them. buildBundle turns this into the
+// manifest's bundle_compression note; it is never guessed in advance.
+let lastZipReport = null;
+
 async function makeZip(files) { // files: [{name, blob}]
   const enc = new TextEncoder();
   const chunks = [], central = [];
-  let offset = 0;
+  const entries = [];
+  let compressor = null, offset = 0;
   for (const f of files) {
-    const data = new Uint8Array(await f.blob.arrayBuffer());
+    const raw = new Uint8Array(await f.blob.arrayBuffer());
     const nameBytes = enc.encode(f.name);
-    const crc = crc32(data);
+    const crc = crc32(raw);
+    let data = raw, method = 0;
+    // v3.1: the compressible entries (the session WAV, the JSON docs)
+    // are DEFLATE-compressed, losslessly — and only when the deflated
+    // form is actually smaller. JPEG frames stay stored.
+    if (f.name.endsWith(".wav") || f.name.endsWith(".json")) {
+      const r = await compressEntry(f.blob);
+      if (r.compressor) compressor = r.compressor;
+      if (r.method === 8 && r.data.length < raw.length) { data = r.data; method = 8; }
+    }
+    entries.push({ name: f.name, method });
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true);
-    local.setUint32(14, crc, true); local.setUint32(18, data.length, true); local.setUint32(22, data.length, true);
+    local.setUint16(8, method, true);
+    local.setUint32(14, crc, true); local.setUint32(18, data.length, true); local.setUint32(22, raw.length, true);
     local.setUint16(26, nameBytes.length, true);
     chunks.push(new Uint8Array(local.buffer), nameBytes, data);
     const cen = new DataView(new ArrayBuffer(46));
     cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true);
-    cen.setUint32(16, crc, true); cen.setUint32(20, data.length, true); cen.setUint32(24, data.length, true);
+    cen.setUint16(10, method, true);
+    cen.setUint32(16, crc, true); cen.setUint32(20, data.length, true); cen.setUint32(24, raw.length, true);
     cen.setUint16(28, nameBytes.length, true); cen.setUint32(42, offset, true);
     central.push(new Uint8Array(cen.buffer), nameBytes);
     offset += 30 + nameBytes.length + data.length;
   }
+  lastZipReport = { compressor, entries };
   const centralSize = central.reduce((a, c) => a + c.length, 0);
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true);
   end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
   end.setUint32(12, centralSize, true); end.setUint32(16, offset, true);
   return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+}
+
+// The manifest's packing note, built from a finished pack's ACTUAL
+// per-entry methods (from lastZipReport) — never from intentions.
+function bundleCompressionNote(report, hasAudio) {
+  const byName = {};
+  report.entries.forEach(e => { byName[e.name] = e.method; });
+  const how = name => byName[name] === 8 ? "deflated (lossless)" : "stored";
+  return {
+    audio_wav: hasAudio ? how("audio.wav") : null,
+    json: how("scan.json"),
+    frames_jpg: "stored",
+    compressor: report.compressor,
+    note: "Since v3.1 the session WAV and the JSON docs are DEFLATE-compressed inside the zip when a compressor is available and the deflated form is smaller; otherwise the entry is stored. Extraction always restores the original bytes bit-identically. JPEG frames are stored as-is (they do not compress further). A stored audio_wav means this browser had no working compressor, or deflate did not shrink the recording."
+  };
 }
 
 let bundleBlob = null, bundleName = "";
@@ -1365,12 +1565,26 @@ async function buildBundle() {
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3 (web capture)" };
+                 made_with: "Scan the World test app v3.1 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });
   try {
     bundleBlob = await makeZip(files);
+    // The manifest states how this bundle was actually packed
+    // (bundle_compression) — knowable only after a first pack, so
+    // pack, record the note in the manifest, and pack again with the
+    // note inside. The second pack reuses the cached WAV compression
+    // and is cheap. The methods the note reports are the methods the
+    // first pack used; the second pack takes the identical code path
+    // on identical entries (only the JSON text gained the note).
+    if (lastZipReport) {
+      meta.bundle_compression = bundleCompressionNote(lastZipReport, !!bundleAudioBlob);
+      const doc2 = JSON.stringify(meta, null, 2);
+      files[files.length - 2] = { name: "scan.json", blob: new Blob([doc2], { type: "application/json" }) };
+      files[files.length - 1] = { name: "manifest.json", blob: new Blob([doc2], { type: "application/json" }) };
+      bundleBlob = await makeZip(files);
+    }
   } catch (e) {
     // Fail loudly, never a dead button: the scan is still on this
     // screen and the failure says what happened.
