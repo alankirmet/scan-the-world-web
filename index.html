@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Scan World">
+<title>Scan the World — test app</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>
+</head>
+<body>
+
+<!-- HOME -->
+<section id="screen-home" class="screen">
+  <header>
+    <h1>Scan the World</h1>
+    <p class="sub">Scan an object. Get its measured story.</p>
+  </header>
+
+  <div class="card">
+    <h2>How to test</h2>
+    <ol class="steps">
+      <li>Print the mat at <strong>100%</strong> — not “fit to page.”</li>
+      <li><strong>Volume up, silent switch off.</strong> Every scan opens with two seconds of soft chirps — the sound checks. Hold the phone over the <strong>empty</strong> table where the object will sit and keep still until they finish.</li>
+      <li>Then put the object in the middle of the mat.</li>
+      <li>Tap Start and walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; just keep the object filling at least half the screen.</li>
+      <li>Use good light. Keep the object still. Quiet room — no TV or talking while you scan.</li>
+    </ol>
+    <p class="muted">I'm scanning on:</p>
+    <div class="seg" id="method-seg">
+      <button type="button" data-method="print-sheet" class="seg-btn active">The printed mat</button>
+      <button type="button" data-method="phone" class="seg-btn">Just the table</button>
+    </div>
+    <p class="muted">Sound:</p>
+    <div class="seg" id="sound-seg">
+      <button type="button" data-sound="chirp" class="seg-btn active">On — chirps</button>
+      <button type="button" data-sound="silent" class="seg-btn">Off — silent</button>
+    </div>
+    <p class="muted">Off means no chirps at all — the microphone still records the room, so a sound-off scan pairs against a sound-on scan of the same object.</p>
+    <p class="muted">Label for this scan (optional — name the object, e.g. “wrench + quarter”):</p>
+    <input id="label-input" type="text" placeholder="Object label" autocomplete="off">
+  </div>
+
+  <button id="btn-start" class="primary">Start a scan</button>
+
+  <div class="row-buttons">
+    <a class="button secondary" href="assets/mat-letter.pdf">Print the mat</a>
+    <a class="button secondary" href="assets/pocket-card.pdf">Pocket card</a>
+  </div>
+
+  <div class="card">
+    <h2>Your scans</h2>
+    <div id="scan-list"><p class="muted">No scans yet.</p></div>
+    <div class="code-row">
+      <input id="code-input" type="text" placeholder="Scan code" autocomplete="off" autocapitalize="characters">
+      <button id="btn-code" class="secondary">See result</button>
+    </div>
+  </div>
+
+  <p class="foot">Test app v3 — browser capture with sound (photos + chirps in one file). The measuring tech underneath is the real thing; the game comes later.</p>
+</section>
+
+<!-- CAPTURE -->
+<section id="screen-capture" class="screen hidden">
+  <div class="capture-head">
+    <button id="btn-cancel" class="text-button">Cancel</button>
+    <span id="pass-label">Pass 1 of 2</span>
+    <span id="kept-count">0 photos</span>
+  </div>
+  <div class="camera-wrap">
+    <video id="cam" autoplay playsinline muted></video>
+    <div id="prompt">Starting the camera…</div>
+  </div>
+  <div class="progress-track"><div id="progress-fill"></div></div>
+  <p id="quality-line" class="center"><span id="quality-dot">●</span> <span id="quality-word">Getting ready…</span></p>
+  <p id="audio-line" class="center muted">Sound: starting…</p>
+  <p id="sharp-value" class="center">Sharpness: —</p>
+  <div class="progress-track sharp-track"><div id="sharp-meter"></div></div>
+  <p class="muted center" id="progress-note">Just walk — the app takes photos on its own and checks each one with the same test the measuring side uses. Soft or badly lit photos aren't kept; the light above tells you when to slow down. A soft chirp sounds for each photo it keeps — that chirp is the sound half taking its own measurement from the same spot. The bar fills as this walking pass completes — it counts good photos, not how much of the object is covered.</p>
+  <button id="btn-done" class="primary" disabled>Done</button>
+</section>
+
+<!-- SEND -->
+<section id="screen-send" class="screen hidden">
+  <header>
+    <h1>Ready to send</h1>
+    <p class="sub">Your scan code is</p>
+    <p id="big-code">——————</p>
+  </header>
+  <div class="card">
+    <p>Your photos <strong>and the sound recording</strong> are packed into one file. Send it to <strong>Homie</strong> in your Muse chat. When the measuring is done, your result shows up here under this code.</p>
+    <p class="muted" id="bundle-size"></p>
+    <p class="muted" id="send-note">Measuring usually takes about 20 minutes.</p>
+  </div>
+  <button id="btn-share" class="primary">Share the scan file</button>
+  <a id="download-link" class="button secondary hidden" download>Save the file instead</a>
+  <button id="btn-send-home" class="text-button wide">Back to start</button>
+</section>
+
+<!-- RESULT -->
+<section id="screen-result" class="screen hidden">
+  <button id="btn-back" class="text-button">← Back</button>
+  <header>
+    <h1 id="result-title">Scan</h1>
+  </header>
+  <div id="result-body"><p class="muted">Loading…</p></div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

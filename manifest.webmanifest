@@ -1,0 +1,1 @@
+{"background_color":"#ffffff","description":"Scan an object. Get its measured story.","display":"standalone","icons":[{"sizes":"192x192","src":"icons/icon-192.png","type":"image/png"},{"sizes":"512x512","src":"icons/icon-512.png","type":"image/png"}],"name":"Scan the World","scope":".","short_name":"Scan World","start_url":".","theme_color":"#111111"}
