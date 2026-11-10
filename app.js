@@ -187,6 +187,354 @@ function buildManifestV2(info) {
 }
 // ==== END SHARED PURE BLOCK ====
 
+// ==== V32 PURE BLOCK — no DOM; extracted by the v3 proof harness
+// ==== (tools/v3_proof) for its unit exercises. Ports of native
+// ==== v1.3's tap-initiation machinery (app-native/src/lib/
+// ==== scaleLock.ts, segmentation.ts, provenance.ts, coverage.ts):
+// ==== the same rules and the same record shapes, so the runner
+// ==== and the evidence ledger read web and native bundles alike.
+// ==== The theory is ORIGIN-TAP-THEORY-2026-11-09.md §§2-5, 13.
+
+// --- denominations: DECLARED by the user, never detected ---
+const COIN_DENOMINATIONS = [
+  { id: "quarter-us", name: "US quarter", diameterMm: 24.26 },
+  { id: "nickel-us", name: "US nickel", diameterMm: 21.21 },
+  { id: "penny-us", name: "US penny", diameterMm: 19.05 },
+  { id: "dime-us", name: "US dime", diameterMm: 17.91 }
+];
+function denominationById(id) {
+  return COIN_DENOMINATIONS.find(d => d.id === id) || COIN_DENOMINATIONS[0];
+}
+
+// --- the scale lock (port of scaleLock.ts) ---
+// Reads arrive one still at a time. A read is the ellipse major
+// axis of the region grown from the user's scale tap, in pixels
+// of the still the read came from. The lock fires when
+// LOCK_READS_REQUIRED successive reads agree within ±LOCK_AGREEMENT
+// on the major axis. A read that disagrees with the previous one
+// by more than the agreement BREAKS the streak (counted) and
+// starts a new one; drift inside a streak slides the window.
+// A null read (no region found on that still) is neutral: the
+// attempt happened (the caller counts it), the streak is untouched.
+const LOCK_AGREEMENT = 0.02;
+const LOCK_READS_REQUIRED = 3;
+class ScaleLockMachine {
+  constructor(denomination) {
+    this.denomination = denomination;
+    this.state = "seeking"; // 'seeking' | 'locked' | 'shape-only'
+    this.streak = [];
+    this.breaks = 0;
+    this.allReads = [];
+    this.lockedPxPerMm = null;
+    this.note = null;
+  }
+  get currentState() { return this.state; }
+  get readCount() { return this.allReads.length; }
+  get streakCount() { return this.streak.length; }
+  feed(read) {
+    if (this.state !== "seeking") return;
+    if (!read) return; // neutral: attempt counted by the caller
+    this.allReads.push(read);
+    const last = this.streak[this.streak.length - 1];
+    if (last && Math.abs(read.majorPx - last.majorPx) / last.majorPx > LOCK_AGREEMENT) {
+      this.breaks++;
+      this.streak = [read];
+      return;
+    }
+    this.streak.push(read);
+    // Slide: drop the oldest reads until the whole streak agrees.
+    while (this.streak.length > 1) {
+      const first = this.streak[0], lastR = this.streak[this.streak.length - 1];
+      if (Math.abs(lastR.majorPx - first.majorPx) / first.majorPx <= LOCK_AGREEMENT) break;
+      this.streak.shift();
+    }
+    if (this.streak.length >= LOCK_READS_REQUIRED) {
+      const mean = this.streak.reduce((a, r) => a + r.majorPx, 0) / this.streak.length;
+      this.lockedPxPerMm = mean / this.denomination.diameterMm;
+      this.state = "locked";
+      this.note = "Scale locked: " + LOCK_READS_REQUIRED + " reads of the declared " +
+        this.denomination.name + " (" + this.denomination.diameterMm +
+        " mm) agreed within ±2% on the ellipse major axis.";
+    }
+  }
+  giveUp(reason) {
+    if (this.state === "locked") return;
+    this.state = "shape-only";
+    this.note = reason;
+  }
+  userWord() {
+    if (this.state === "locked") {
+      return "Scale locked — the " + this.denomination.name + " gave " +
+        (Math.round(this.lockedPxPerMm * 100) / 100) +
+        " px per mm. The whole scan inherits this size.";
+    }
+    if (this.state === "shape-only") {
+      return "Shape only this scan — no size was locked, and the scan will say so.";
+    }
+    return "Keep adjusting — the size hasn't locked yet.";
+  }
+  record() {
+    return {
+      declared: {
+        id: this.denomination.id, name: this.denomination.name,
+        diameter_mm: this.denomination.diameterMm, source: "user-declared"
+      },
+      state: this.state,
+      reads: this.allReads.map(r => ({
+        major_px: Math.round(r.majorPx * 10) / 10,
+        minor_px: Math.round(r.minorPx * 10) / 10,
+        at_epoch_ms: r.atEpochMs
+      })),
+      scatter_breaks: this.breaks,
+      locked_px_per_mm: this.lockedPxPerMm == null ? null
+        : Math.round(this.lockedPxPerMm * 10000) / 10000,
+      note: this.note
+    };
+  }
+}
+
+// --- seeded segmentation (port of segmentation.ts) ---
+// Nearest-neighbour downscale to an analysis frame of at most
+// maxDim on the long edge (the native engine's ≤512 px frame).
+// Returns factor = full width / small width, the native convention:
+// small coords = full coords / factor; small px * factor = full px.
+function downscaleGray(rgba, w, h, maxDim) {
+  const gray = grayFromRGBA(rgba);
+  const longEdge = Math.max(w, h);
+  if (longEdge <= maxDim) return { gray, w, h, factor: 1 };
+  const s = maxDim / longEdge;
+  const sw = Math.max(1, Math.round(w * s)), sh = Math.max(1, Math.round(h * s));
+  const small = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(h - 1, Math.floor(y / s));
+    for (let x = 0; x < sw; x++) {
+      const sx = Math.min(w - 1, Math.floor(x / s));
+      small[y * sw + x] = gray[sy * w + sx];
+    }
+  }
+  return { gray: small, w: sw, h: sh, factor: w / sw };
+}
+
+function patchMean(gray, w, h, cx, cy, r) {
+  let sum = 0, n = 0;
+  for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++) {
+    for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
+      sum += gray[y * w + x]; n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+
+// Flood-fill the connected region around the seed whose pixels sit
+// within `tolerance` gray levels of the seed patch's mean.
+// Deliberately the native test-build grow: a desk of similar tone
+// can swallow the region — that failure is meant to be VISIBLE in
+// the recorded boundary (or its recorded absence), never hidden.
+function growRegion(gray, w, h, sx, sy, tolerance) {
+  const tol = tolerance == null ? 24 : tolerance;
+  const mask = new Uint8Array(w * h);
+  const seedX = Math.max(0, Math.min(w - 1, Math.round(sx)));
+  const seedY = Math.max(0, Math.min(h - 1, Math.round(sy)));
+  const target = patchMean(gray, w, h, seedX, seedY, 2);
+  const stack = [seedY * w + seedX];
+  mask[seedY * w + seedX] = 1;
+  let area = 0, x0 = w, y0 = h, x1 = -1, y1 = -1;
+  while (stack.length) {
+    const i = stack.pop();
+    area++;
+    const x = i % w, y = (i / w) | 0;
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    const nb = [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1,
+                y > 0 ? i - w : -1, y < h - 1 ? i + w : -1];
+    for (const j of nb) {
+      if (j >= 0 && !mask[j] && Math.abs(gray[j] - target) <= tol) {
+        mask[j] = 1; stack.push(j);
+      }
+    }
+  }
+  return { mask, areaPx: area, bbox: area > 0 ? { x0, y0, x1, y1 } : null };
+}
+
+// Second-moment ellipse of a mask: axes = 4σ along the principal
+// directions — for a filled ellipse this recovers its full axes,
+// at any tilt (the major axis is the true diameter of a tilted
+// coin; theory §3). Returns axes in mask-frame pixels, or null.
+function ellipseAxes(mask, w, h) {
+  let n = 0, mx = 0, my = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (mask[y * w + x]) { n++; mx += x; my += y; }
+  }
+  if (n < 8) return null;
+  mx /= n; my /= n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (mask[y * w + x]) {
+      const dx = x - mx, dy = y - my;
+      sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+    }
+  }
+  sxx /= n; syy /= n; sxy /= n;
+  const tr = sxx + syy, det = sxx * syy - sxy * sxy;
+  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const l1 = tr / 2 + disc, l2 = Math.max(0, tr / 2 - disc);
+  return { majorPx: 4 * Math.sqrt(l1), minorPx: 4 * Math.sqrt(l2) };
+}
+
+// --- region provenance (port of provenance.ts; theory §13) ---
+// Every region of the finished model carries where it came from.
+// A FILLED region is closed algorithmically: it makes the trophy
+// read whole and must NEVER feed a dimension.
+function buildRegionProvenance(input) {
+  const sp = input.secondPass;
+  let bottom;
+  if (sp && sp.completed && sp.kind === "flip") {
+    bottom = {
+      region: "bottom", source: "pass-2", pass_kind: "flip",
+      feeds_dimension: true,
+      note: "Measured in the flip pass — the object was turned over."
+    };
+  } else if (sp && sp.completed && sp.kind === "bottom") {
+    bottom = {
+      region: "bottom", source: "pass-2", pass_kind: "bottom",
+      feeds_dimension: true,
+      note: "Measured in the scan-bottom pass — the object was tilted and the pass was placed as the bottom."
+    };
+  } else if (input.applyFill) {
+    bottom = {
+      region: "bottom", source: "filled", pass_kind: null,
+      feeds_dimension: false,
+      note: "Never seen by any pass. Closed algorithmically to the support plane so the trophy reads whole. FILLED — not measured, never feeds a dimension."
+    };
+  } else {
+    bottom = {
+      region: "bottom", source: "unseen", pass_kind: null,
+      feeds_dimension: false,
+      note: "Not captured and not filled — the model is open underneath."
+    };
+  }
+  const regions = [
+    { region: "top", source: "pass-1", pass_kind: null, feeds_dimension: true,
+      note: "Seen from above in the primary capture." },
+    { region: "sides", source: "pass-1", pass_kind: null, feeds_dimension: true,
+      note: "Seen from around the object in the primary capture." },
+    bottom
+  ];
+  return {
+    regions,
+    has_filled: regions.some(r => r.source === "filled"),
+    fully_measured: regions.every(r => r.source === "pass-1" || r.source === "pass-2")
+  };
+}
+function regionMayFeedDimension(prov, region) {
+  const r = prov.regions.find(x => x.region === region);
+  return !!r && r.feeds_dimension;
+}
+
+// --- coverage + intake (port of coverage.ts, guided sectors) ---
+// The model grows by BANKING views; a gated photo that adds no new
+// coverage is DISCARDED with a one-line trace. The browser offers
+// no pose channel the app may honestly use for banking (the IMU
+// turn figure stays a diversity proxy in frames_meta, never an
+// azimuth), so banking runs in GUIDED-SECTOR mode exactly as
+// native's: the app walks the user sector by sector and banks
+// frames into the sector it is currently guiding. The snapshot
+// records pose_source 'guided-sectors-no-device-pose' — guided
+// mode is never dressed up as measured pose.
+const COVERAGE_PARTS = ["front", "right", "back", "left", "top"];
+const VIEWS_PER_PART = 3;
+const GUIDANCE_WORDS = {
+  front: "Start at the front — keep it filling half the screen.",
+  right: "Now from the right side.",
+  back: "Now the back.",
+  left: "Now from the left side.",
+  top: "Now a little higher — let's get the top."
+};
+class CoverageTracker {
+  constructor() {
+    this.banked = { top: 0, front: 0, right: 0, back: 0, left: 0 };
+    this.intake = [];
+    this.counter = 0;
+    this.frozen = false; // no pose source exists to lose; kept for shape parity
+  }
+  currentPart() {
+    for (const p of ["front", "right", "back", "left"]) {
+      if (this.banked[p] < VIEWS_PER_PART) return p;
+    }
+    return "top";
+  }
+  partState(p) {
+    if (this.banked[p] >= VIEWS_PER_PART) return "complete";
+    return this.banked[p] > 0 ? "partial" : "missing";
+  }
+  isComplete() {
+    return COVERAGE_PARTS.every(p => this.banked[p] >= VIEWS_PER_PART);
+  }
+  guidance() {
+    if (this.isComplete()) return "That's the whole object from up here — the model says complete.";
+    return GUIDANCE_WORDS[this.currentPart()];
+  }
+  // Offer one gated-kept view. passIndex 0 (level pass) banks into
+  // the sector currently being guided; passIndex >= 1 (the higher
+  // pass) banks to 'top'. A view for a complete part is discarded
+  // 'no-new-coverage' — the kept photo still ships in the bundle;
+  // the ledger records that it added no new coverage.
+  offer(passIndex) {
+    this.counter++;
+    const part = passIndex >= 1 ? "top" : this.currentPart();
+    if (this.banked[part] >= VIEWS_PER_PART) {
+      return this.trace("discarded", "no-new-coverage", part);
+    }
+    this.banked[part]++;
+    return this.trace("banked", "new-coverage", part);
+  }
+  // Trace a view that never reached banking (gate failure or
+  // end-of-capture selection thinning) so the ledger accounts for
+  // it. Gate-passed attempts skipped by the keep-pacing gap are
+  // NOT traced here — the offer cadence is the capture loop's own;
+  // they are counted in capture.attempts_pacing_skipped instead.
+  traceOutside(reason) {
+    this.counter++;
+    return this.trace("discarded", reason, null);
+  }
+  trace(outcome, reason, part) {
+    const e = { n: this.counter, outcome, reason, part };
+    this.intake.push(e);
+    return e;
+  }
+  intakeEntries() { return this.intake.slice(); }
+  snapshot() {
+    const parts = {};
+    for (const p of COVERAGE_PARTS) {
+      parts[p] = { banked: this.banked[p], needed: VIEWS_PER_PART, state: this.partState(p) };
+    }
+    return {
+      pose_source: "guided-sectors-no-device-pose",
+      parts,
+      declared_complete: this.isComplete(),
+      frozen: this.frozen,
+      banked_total: this.intake.filter(e => e.outcome === "banked").length,
+      discarded_total: this.intake.filter(e => e.outcome === "discarded").length
+    };
+  }
+}
+
+// The initiation record (native manifest shape): the tap IS the
+// scope of the scan, and the initiation still is its evidence.
+function buildInitiationRecord(p) {
+  const r4 = v => Math.round(v * 10000) / 10000;
+  return {
+    origin: { x: r4(p.origin.x), y: r4(p.origin.y) },
+    still_file: "initiation.jpg",
+    boundary: p.boundary,
+    boundary_note: p.boundaryNote,
+    scale_tap: p.scaleTap ? { x: r4(p.scaleTap.x), y: r4(p.scaleTap.y) } : null,
+    scale_still_file: p.scaleTap ? "scale-still.jpg" : null,
+    scene_live_until: p.sceneLiveUntil
+  };
+}
+// ==== END V32 PURE BLOCK ====
+
 // ---------- audio (v3, 2026-11-09) ----------
 // WEB CAPTURE v3: the browser build of the native app's chirp
 // session (app-native v1.1/v1.2). Same frozen emission spec
@@ -313,7 +661,11 @@ async function wavRateFromBlob(blob) {
 // The evidence ledger — a port of native buildEvidenceLedger
 // (manifest.ts) over a web session record. Estimator-side groups
 // stay null + flag, exactly as native: never dressed as values.
-function buildEvidenceLedgerWeb(session, frames) {
+// v3.2: the optional third argument carries the v1.3 tap-initiation
+// records (scale lock, intake ledger, region provenance); absent
+// (a pre-v3.2 flow) the groups ride as null + 'no_v13_initiation',
+// the same flag native writes when a bundle has no initiation.
+function buildEvidenceLedgerWeb(session, frames, v13) {
   const s = session || null;
   const poseChirps = (s && s.pose_chirps) || [];
   const noSessNum = () => ({ value: null, flag: s ? "not_computed_at_capture" : "no_audio_session" });
@@ -408,7 +760,16 @@ function buildEvidenceLedgerWeb(session, frames) {
     height_pair_consistency: heightPair,
     temperature_state: temp,
     final_decision: decision,
-    diagnostic_reason: reason
+    diagnostic_reason: reason,
+    scale_lock: v13 && v13.scaleLock
+      ? { value: v13.scaleLock, flag: "recorded" }
+      : { value: null, flag: "no_v13_initiation" },
+    intake_ledger: v13 && v13.intakeEntries
+      ? { value: v13.intakeEntries, flag: "recorded" }
+      : { value: null, flag: "no_v13_initiation" },
+    region_provenance: v13 && v13.regionProvenance
+      ? { value: v13.regionProvenance, flag: "recorded" }
+      : { value: null, flag: "no_v13_initiation" }
   };
 }
 
@@ -426,14 +787,19 @@ function buildManifestV3(info) {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3.1 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.2 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.1", build: 4, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.2", build: 5, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
+    // v1.3 tap-initiation blocks (native manifest placement: they
+    // ride only when the flow produced them — every v3.2 scan does).
+    ...(info.initiation ? { initiation: info.initiation } : {}),
+    ...(info.coverage ? { coverage: info.coverage } : {}),
+    ...(info.secondPasses ? { second_passes: info.secondPasses } : {}),
     capture: {
-      version: 3,
-      style: "continuous orbit, two passes (level, then higher)",
+      version: 4,
+      style: "tap initiation + declared scale lock, continuous orbit two passes (level, then higher), optional flip / scan-bottom second pass",
       gate: {
         definition: "port of scanner-core gates.py check_frame — native-resolution grayscale Laplacian variance + exposure/clipping checks, always computed on the native-resolution canvas; since v3.1 the bundled frame is that canvas downscaled to the frame_max_px long edge (JPEG 0.85) when the stream is larger — gate scores are computed pre-downscale, and frames_meta records the bundled dimensions",
         sharpness_min: GATE_LIMITS.SHARPNESS_MIN,
@@ -447,6 +813,7 @@ function buildManifestV3(info) {
       passes: info.passes,
       attempts: info.attempts,
       gate_dropped: info.gateDropped,
+      attempts_pacing_skipped: info.pacingSkipped || 0,
       selection_dropped: info.selectionDropped,
       target_frames: info.targetFrames,
       cap_frames: info.capFrames,
@@ -876,6 +1243,12 @@ const PASS_WORDS = [
   "Walk slowly around it — stay level with the object.",
   "Second pass — a little higher this time, looking down a bit."
 ];
+// v3.2 (native v1.3 parity): the optional second pass (Flip /
+// Scan Bottom, theory §13) gets its own small frame budget, and
+// the scale-lock loop takes at most LOCK_MAX_ATTEMPTS extra stills
+// after the scale tap's own still (native LOCK_MAX_ATTEMPTS = 8).
+const SECOND_PASS_TARGET = 8, SECOND_PASS_CAP = 12;
+const LOCK_MAX_ATTEMPTS = 8;
 const COACHING = {
   "blurry": "Slow down — hold steady for a breath.",
   "highlights clipped": "Too much glare — shift a little so light isn't bouncing straight back.",
@@ -892,6 +1265,13 @@ let stream = null, capturing = false, attemptBusy = false,
 let audioSession = null, audioUnavailableReason = null,
     scanPhase = "starting", scanCancelled = false,
     bundleAudioBlob = null, captureStartedAt = 0;
+// v3.2 tap-initiation state (reset per scan in startScan)
+let scanGen = 0, loopGen = 0,
+    initiationData = null, scaleMachine = null, denomId = "quarter-us",
+    scalePointNorm = null, initiationBlob = null, scaleBlob = null,
+    coverageTracker = null, pacingSkipped = 0,
+    tapBusy = false, lockAttempts = 0,
+    secondPassKind = null, choiceShown = false, finalizeStarted = false;
 const gateCanvas = document.createElement("canvas");
 const gctx = gateCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -949,7 +1329,19 @@ function setPrompt() {
   } else if (scanPhase === "baseline-failed") {
     text = (audioSession && audioSession.baselineFailure) || "The sound checks didn't work — the photos still count.";
   } else if (scanPhase === "baseline-done") {
-    text = "Sound checks done — now put the object down and walk slowly around it.";
+    text = "Sound checks done — now put the object down and tap it.";
+  } else if (scanPhase === "initiation") {
+    text = "Tap the object you want to scan.";
+  } else if (scanPhase === "scale") {
+    text = "Tap anything whose size you know — a coin works. Or skip: shape only is fine.";
+  } else if (scanPhase === "locking") {
+    text = scaleMachine ? scaleMachine.userWord() : "Keep adjusting — the size hasn't locked yet.";
+  } else if (scanPhase === "choice") {
+    text = "That's the object from up here. Want the bottom too?";
+  } else if (scanPhase === "walk2") {
+    text = secondPassKind === "flip"
+      ? "Flipped over — now walk around this side the same slow way."
+      : "On its side — walk around it slowly. This pass becomes the bottom.";
   } else if (now < transitionUntil) {
     text = passIndex === 1
       ? "That's the first pass. Now the second — a little higher."
@@ -964,13 +1356,17 @@ function setPrompt() {
   $("pass-label").textContent =
     (scanPhase === "baseline" || scanPhase === "baseline-failed" || scanPhase === "baseline-done")
       ? "Sound checks"
+      : scanPhase === "initiation" ? "Getting started"
+      : (scanPhase === "scale" || scanPhase === "locking") ? "Size — optional"
+      : scanPhase === "choice" ? "Almost done"
+      : scanPhase === "walk2" ? "Second pass"
       : "Pass " + (passIndex + 1) + " of 2";
   const aline = $("audio-line");
   if (aline) aline.textContent = audioLineText();
   const total = kept.length;
   $("kept-count").textContent = total + (total === 1 ? " photo" : " photos");
   $("progress-fill").style.width =
-    Math.min(100, Math.round(100 * keptThisPass / PASS_TARGET)) + "%";
+    Math.min(100, Math.round(100 * keptThisPass / (passIndex === 2 ? SECOND_PASS_TARGET : PASS_TARGET))) + "%";
   const q = qualityState();
   $("quality-dot").style.color = q.color;
   $("quality-word").textContent = q.word;
@@ -983,10 +1379,23 @@ function setPrompt() {
     meter.style.width = Math.min(100, Math.round(100 * lastScore / (GATE_LIMITS.SHARPNESS_MIN * 2))) + "%";
     meter.style.background = ok ? "var(--good)" : "var(--warn)";
   }
-  $("btn-done").disabled = total < DONE_MIN;
-  $("btn-done").textContent = total >= DONE_MIN
-    ? "Done — " + total + " photos"
-    : "Done (need " + DONE_MIN + " photos)";
+  const doneBtn = $("btn-done");
+  if (scanPhase === "choice") {
+    // The second-pass card below carries the actions in this phase.
+    doneBtn.classList.add("hidden");
+  } else if (scanPhase === "initiation" || scanPhase === "scale" || scanPhase === "locking") {
+    doneBtn.classList.remove("hidden");
+    doneBtn.disabled = true;
+    doneBtn.textContent = "Done";
+  } else {
+    doneBtn.classList.remove("hidden");
+    doneBtn.disabled = total < DONE_MIN;
+    doneBtn.textContent = total >= DONE_MIN
+      ? "Done — " + total + " photos"
+      : "Done (need " + DONE_MIN + " photos)";
+  }
+  renderScaleUi();
+  updateGuidance();
 }
 
 function encodeCanvas(canvas) {
@@ -1038,13 +1447,18 @@ async function captureAttempt() {
     recentResults.push(res.passed); if (recentResults.length > 5) recentResults.shift();
     if (!res.passed) {
       gateDropped++;
+      // v3.2: the intake ledger accounts for gate failures too
+      // (native traceOutside) — primary walk only; the second
+      // pass keeps its own accounting in second_passes/passStats.
+      if (coverageTracker && passIndex < 2) coverageTracker.traceOutside("gate-failed");
       recentFailures.push(res.failures); if (recentFailures.length > 5) recentFailures.shift();
       setPrompt();
       return;
     }
     recentFailures = [];
     const now = performance.now();
-    if (now - lastKeepAt < KEEP_GAP_MS || kept.length >= CAP_TOTAL) { setPrompt(); return; }
+    if (now - lastKeepAt < KEEP_GAP_MS) { pacingSkipped++; setPrompt(); return; }
+    if (kept.length >= (passIndex === 2 ? CAP_TOTAL + SECOND_PASS_CAP : CAP_TOTAL)) { setPrompt(); return; }
     const enc = await encodeBundleFrame(gateCanvas);
     const blob = enc.blob;
     if (!blob || !capturing) return;
@@ -1068,14 +1482,22 @@ async function captureAttempt() {
     // Fire-and-forget on the audio clock; a failure is recorded in
     // the session and the photo is kept regardless (native parity).
     // Silent mode (A/B switch off): never called — no emission.
-    if (audioSession && scanSoundMode === "chirp") {
+    // v3.2: the second pass (passIndex 2) emits NO pose chirps —
+    // like native's second pass it is a separate act whose frames
+    // carry no chirp pairing in the primary session record; the
+    // frames' ambient audio offsets stay real (one recording).
+    if (audioSession && scanSoundMode === "chirp" && passIndex < 2) {
       const rec = audioSession.emitPoseChirp(kept.length - 1, passIndex + 1, grabEpoch);
       const fm = frameMeta[frameMeta.length - 1];
       fm.pose_chirp_audio_offset_ms = rec.status === "emitted" ? rec.audio_offset_ms : null;
     }
     keptThisPass++;
+    // v3.2: bank the view into the coverage model (guided sectors).
+    if (coverageTracker && passIndex < 2) coverageTracker.offer(passIndex);
     setPrompt();
-    if (keptThisPass >= PASS_TARGET || keptThisPass >= PASS_CAP) {
+    const pTarget = passIndex === 2 ? SECOND_PASS_TARGET : PASS_TARGET;
+    const pCap = passIndex === 2 ? SECOND_PASS_CAP : PASS_CAP;
+    if (keptThisPass >= pTarget || keptThisPass >= pCap) {
       if (passIndex === 0 && kept.length < CAP_TOTAL) {
         passStats.push({ pass: 1, kept: keptThisPass });
         passIndex = 1; keptThisPass = 0;
@@ -1084,16 +1506,20 @@ async function captureAttempt() {
       } else {
         void finishCapture();
       }
-    } else if (kept.length >= CAP_TOTAL) void finishCapture();
+    } else if (kept.length >= (passIndex === 2 ? CAP_TOTAL + SECOND_PASS_CAP : CAP_TOTAL)) void finishCapture();
   } finally { attemptBusy = false; }
 }
 
-async function captureLoop() {
-  while (capturing) {
+async function captureLoop(gen) {
+  while (capturing && gen === loopGen) {
     await captureAttempt();
     await new Promise(r => setTimeout(r, ATTEMPT_MS));
   }
 }
+// The loop restarts per walk (main walk, then the second pass);
+// the generation stamp retires any loop still sleeping from an
+// earlier phase so two loops never run at once.
+function startCaptureLoop() { loopGen++; captureLoop(loopGen); }
 
 // Attempt focus / exposure / white-balance locks through track
 // constraints, then read the settings back: the manifest records
@@ -1144,6 +1570,19 @@ async function startScan() {
   captureMeta = null; currentCode = newCode();
   audioSession = null; audioUnavailableReason = null; bundleAudioBlob = null;
   scanPhase = "starting"; scanCancelled = false; captureStartedAt = Date.now();
+  // v3.2 per-scan reset: tap initiation, scale lock, coverage,
+  // second pass — and the capture screen's v3.2 furniture.
+  scanGen++;
+  initiationData = null; scaleMachine = null; scalePointNorm = null;
+  initiationBlob = null; scaleBlob = null;
+  coverageTracker = new CoverageTracker();
+  pacingSkipped = 0; tapBusy = false; lockAttempts = 0;
+  secondPassKind = null; choiceShown = false; finalizeStarted = false;
+  denomId = "quarter-us";
+  document.querySelectorAll("#denom-seg .seg-btn").forEach(x =>
+    x.classList.toggle("active", x.dataset.denom === denomId));
+  $("second-pass-ui").classList.add("hidden");
+  $("tap-dot").classList.add("hidden");
   show("capture"); setPrompt();
   // iOS motion permission must come from a user gesture; ask, never block on it.
   try {
@@ -1196,12 +1635,10 @@ async function startScan() {
       audioUnavailableReason = audioSession.recFailure || "sound recording did not start — photos only this scan";
     }
     if (scanSoundMode === "silent") {
-      // A/B switch OFF: no baseline, no chirps — straight to the
-      // walk. The microphone keeps recording the room throughout.
-      scanPhase = "walk";
-      capturing = true;
-      setPrompt();
-      captureLoop();
+      // A/B switch OFF: no baseline, no chirps. The microphone
+      // keeps recording the room throughout. v3.2: the tap
+      // initiation comes first, then the walk.
+      enterInitiation();
       return;
     }
     scanPhase = "baseline";
@@ -1219,15 +1656,12 @@ async function startScan() {
       await sleepMs(1600);
       if (scanCancelled) return;
     }
-    scanPhase = "walk";
-    capturing = true;
-    setPrompt();
-    captureLoop();
+    enterInitiation();
   } catch (e) {
     $("prompt").textContent = "The camera didn't start. Allow camera access and try again.";
   }
 }
-function stopCapture() { capturing = false; }
+function stopCapture() { capturing = false; loopGen++; }
 function endCamera() {
   scanCancelled = true;
   stopCapture();
@@ -1236,29 +1670,327 @@ function endCamera() {
   $("cam").srcObject = null;
 }
 
+// ---------- v3.2 tap initiation, scale lock, second pass ----------
+// The flow (native v1.3 parity; theory §§2-5, 13): baseline (or
+// silent) → tap the object → tap a known-size thing (or skip) →
+// the lock loop reads stills until three agree or the attempts
+// run out → the two-pass walk, steered by the coverage guidance →
+// the second-pass choice (Flip / Scan Bottom / finish) → pack.
+
+function recordPassStat() {
+  const p = passIndex + 1;
+  if (passStats.some(s => s.pass === p)) return;
+  passStats.push(p === 3
+    ? { pass: 3, kept: keptThisPass, kind: secondPassKind }
+    : { pass: p, kept: keptThisPass });
+}
+
+function updateGuidance() {
+  const el = $("guidance-line");
+  if (!el) return;
+  if (coverageTracker && scanPhase === "walk") {
+    el.textContent = coverageTracker.guidance();
+    el.classList.remove("hidden");
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
+function renderScaleUi() {
+  const ui = $("scale-ui");
+  if (!ui) return;
+  const inScale = scanPhase === "scale", inLock = scanPhase === "locking";
+  ui.classList.toggle("hidden", !(inScale || inLock));
+  $("denom-seg").classList.toggle("hidden", !inScale);
+  $("scale-ui-label").classList.toggle("hidden", !inScale);
+  $("btn-skip-scale").classList.toggle("hidden", !inScale);
+  $("lock-word").classList.toggle("hidden", !inLock);
+  $("lock-progress").classList.toggle("hidden", !inLock);
+  $("btn-skip-locking").classList.toggle("hidden", !inLock);
+  if (inLock && scaleMachine) {
+    $("lock-word").textContent = scaleMachine.userWord();
+    $("lock-progress").textContent =
+      "Reads so far: " + scaleMachine.readCount +
+      " · steady streak: " + scaleMachine.streakCount + " of " + LOCK_READS_REQUIRED;
+  }
+  $("tap-layer").classList.toggle("hidden", !(scanPhase === "initiation" || inScale));
+}
+
+function enterInitiation() {
+  if (scanCancelled) return;
+  scanPhase = "initiation";
+  setPrompt();
+}
+
+// Map a tap on the preview to normalised photo coordinates. The
+// preview element uses object-fit: cover, so the displayed frame
+// is a centre crop of the stream — the mapping undoes exactly
+// that crop (native's viewToPhoto, cover-fit form).
+function videoTapPoint(ev) {
+  const video = $("cam");
+  if (!video.videoWidth) return null;
+  const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const ox = (rect.width - vw * scale) / 2, oy = (rect.height - vh * scale) / 2;
+  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+  return {
+    nx: clamp01((cx - ox) / scale / vw), ny: clamp01((cy - oy) / scale / vh),
+    dx: cx / rect.width, dy: cy / rect.height
+  };
+}
+
+function showTapDot(p, isScale) {
+  const dot = $("tap-dot");
+  dot.style.left = (p.dx * 100) + "%";
+  dot.style.top = (p.dy * 100) + "%";
+  dot.style.borderColor = isScale ? "#7fd08c" : "#ffffff";
+  dot.classList.remove("hidden");
+}
+
+// A fresh canvas holding the current preview frame at stream
+// resolution (fresh per still: the bundled blob encodes
+// asynchronously and must never race the next grab).
+function grabStillCanvas() {
+  const video = $("cam");
+  if (!video.videoWidth) return null;
+  const c = document.createElement("canvas");
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext("2d").drawImage(video, 0, 0);
+  return c;
+}
+
+// Analyse a still: grayscale analysis frame ≤512 px (native
+// analyseStill), returned with the full still's dimensions.
+function analyseStill(canvas) {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const small = downscaleGray(img.data, canvas.width, canvas.height, 512);
+  return { small, fullW: canvas.width, fullH: canvas.height };
+}
+
+// One scale read from a still at the stored scale point (native
+// scaleReadFrom): grow the region, take its ellipse axes in
+// full-still pixels, feed the machine. True when a read was fed.
+function scaleReadFrom(canvas) {
+  if (!scalePointNorm || !scaleMachine) return false;
+  const st = analyseStill(canvas);
+  const f = st.small.factor;
+  const region = growRegion(st.small.gray, st.small.w, st.small.h,
+    scalePointNorm.x * st.fullW / f, scalePointNorm.y * st.fullH / f);
+  const axes = region.areaPx > 20 ? ellipseAxes(region.mask, st.small.w, st.small.h) : null;
+  if (!axes) { scaleMachine.feed(null); return false; }
+  scaleMachine.feed({ majorPx: axes.majorPx * f, minorPx: axes.minorPx * f, atEpochMs: Date.now() });
+  return true;
+}
+
+async function onInitiationTap(ev) {
+  if (scanPhase !== "initiation" || tapBusy) return;
+  const p = videoTapPoint(ev);
+  if (!p) return;
+  tapBusy = true;
+  try {
+    const canvas = grabStillCanvas();
+    if (!canvas) return;
+    const enc = await encodeBundleFrame(canvas);
+    if (!enc.blob) return; // a failed still costs nothing — tap again
+    initiationBlob = enc.blob;
+    const st = analyseStill(canvas);
+    const region = growRegion(st.small.gray, st.small.w, st.small.h,
+      p.nx * st.small.w, p.ny * st.small.h);
+    const frac = region.areaPx / (st.small.w * st.small.h);
+    const boundary = region.bbox && frac > 0.002 && frac < 0.7
+      ? { area_px: region.areaPx, bbox: region.bbox } : null;
+    initiationData = {
+      origin: { x: p.nx, y: p.ny },
+      boundary,
+      boundaryNote: boundary
+        ? "Boundary grown from the origin tap on the initiation still (seeded region grow, analysis frame ≤512 px). The initiation still is the evidence."
+        : "The region grow from the origin did not settle on a plausible boundary on the initiation still — recorded as failed; the scan is scoped by the tap point alone.",
+      scaleTap: null,
+      sceneLiveUntil: "no-scale-tap"
+    };
+    scaleMachine = new ScaleLockMachine(denominationById(denomId));
+    showTapDot(p, false);
+    scanPhase = "scale";
+    setPrompt();
+  } finally { tapBusy = false; }
+}
+
+async function onScaleTap(ev) {
+  if (scanPhase !== "scale" || tapBusy || !initiationData) return;
+  const p = videoTapPoint(ev);
+  if (!p) return;
+  tapBusy = true;
+  try {
+    // The denomination may have been changed on the chips after
+    // the machine was created — rebuild it so the DECLARED size
+    // is the one the user settled on (native parity).
+    scaleMachine = new ScaleLockMachine(denominationById(denomId));
+    const canvas = grabStillCanvas();
+    if (!canvas) return;
+    const enc = await encodeBundleFrame(canvas);
+    if (!enc.blob) return;
+    scaleBlob = enc.blob;
+    initiationData.scaleTap = { x: p.nx, y: p.ny };
+    scalePointNorm = { x: p.nx, y: p.ny };
+    scaleReadFrom(canvas);
+    initiationData.sceneLiveUntil = "scale-read-taken";
+    showTapDot(p, true);
+    scanPhase = "locking";
+    lockAttempts = 0;
+    setPrompt();
+    void lockLoop();
+  } finally { tapBusy = false; }
+}
+
+function skipScale() {
+  if (!initiationData || !scaleMachine) return;
+  scaleMachine.giveUp("You skipped the size tap — shape only this scan.");
+  initiationData.sceneLiveUntil = "scale-refused";
+  startWalk();
+}
+
+// The locking loop (native parity): while the user adjusts,
+// stills repeat every ~1.2 s and feed the machine until it locks
+// or LOCK_MAX_ATTEMPTS extra stills run out.
+async function lockLoop() {
+  const gen = scanGen;
+  while (!scanCancelled && gen === scanGen && scanPhase === "locking" &&
+         scaleMachine && scaleMachine.currentState === "seeking" &&
+         lockAttempts < LOCK_MAX_ATTEMPTS) {
+    await sleepMs(1200);
+    if (scanCancelled || gen !== scanGen || scanPhase !== "locking") return;
+    const canvas = grabStillCanvas();
+    if (canvas) scaleReadFrom(canvas); else scaleMachine.feed(null);
+    lockAttempts++;
+    setPrompt();
+  }
+  if (scanCancelled || gen !== scanGen || scanPhase !== "locking" || !scaleMachine) return;
+  if (scaleMachine.currentState === "seeking") {
+    scaleMachine.giveUp("The size never locked after " + (lockAttempts + 1) +
+      " reads — shape only this scan. The reads are in the scan's record.");
+  }
+  setPrompt();
+  await sleepMs(900); // let the lock word land before the walk starts
+  if (scanCancelled || gen !== scanGen || scanPhase !== "locking") return;
+  startWalk();
+}
+
+function skipLocking() {
+  if (!scaleMachine) return;
+  scaleMachine.giveUp("You stopped the size read early — shape only this scan.");
+  startWalk();
+}
+
+function startWalk() {
+  if (scanCancelled) return;
+  scanPhase = "walk";
+  capturing = true;
+  setPrompt();
+  startCaptureLoop();
+}
+
+// The main walk is done: stop capturing but keep the camera and
+// the recording alive — the second-pass choice comes next, and a
+// second pass continues the same session (one WAV, one clock).
+function endMainWalk() {
+  stopCapture();
+  recordPassStat();
+  choiceShown = true;
+  scanPhase = "choice";
+  const snap = coverageTracker ? coverageTracker.snapshot() : null;
+  $("coverage-word").textContent = snap && snap.declared_complete
+    ? "Every side is banked — the model has the whole object from up here."
+    : "Some sides are still thin — the scan keeps what it has, and the record says which sides are missing.";
+  $("scale-word").textContent = scaleMachine ? scaleMachine.userWord() : "";
+  $("second-pass-ui").classList.remove("hidden");
+  setPrompt();
+}
+
+function beginSecondPass(kind) {
+  secondPassKind = kind;
+  $("second-pass-ui").classList.add("hidden");
+  scanPhase = "walk2";
+  passIndex = 2; keptThisPass = 0; lastKeepAt = 0;
+  capturing = true;
+  setPrompt();
+  startCaptureLoop();
+}
+
+// finishCapture is the one finish entry (Done button + natural
+// pass completion): finishing the MAIN walk opens the second-pass
+// choice; finishing the second pass (or choosing "No") packs.
+async function finishCapture() {
+  if (scanPhase === "walk" && !choiceShown) { endMainWalk(); return; }
+  await finalizeCapture();
+}
+
 // Finish: thin an over-full scan to the target budget (sharpest per
 // slice of the walk), remap the per-pose chirps onto the final frame
 // numbering (native captureEngine behaviour), close the audio
 // session into a WAV, build the v3 manifest, hand over to Send.
-async function finishCapture() {
-  if (!capturing && captureMeta) return;
+// v3.2: this is the PACK step — it runs only after the second-pass
+// choice (or the second pass itself). Thinning is per group: the
+// main two passes thin to TARGET_TOTAL as before; second-pass
+// frames thin separately to SECOND_PASS_TARGET so the flip/bottom
+// views are never eaten by the main budget.
+async function finalizeCapture() {
+  if (finalizeStarted) return;
+  finalizeStarted = true;
   stopCapture();
-  passStats.push({ pass: passIndex + 1, kept: keptThisPass });
+  recordPassStat();
   if (streamInfo && !streamInfo.width && gateCanvas.width) {
     streamInfo.width = gateCanvas.width; streamInfo.height = gateCanvas.height;
   }
+  const secondKeptRaw = frameMeta.filter(m => m.pass === 3).length;
   let selectionDropped = 0;
   const oldToNew = new Map();
-  if (kept.length > TARGET_TOTAL) {
-    const idx = selectKeptIndices(frameMeta, TARGET_TOTAL);
-    selectionDropped = kept.length - idx.length;
-    idx.forEach((old, n) => oldToNew.set(old, n));
-    kept = idx.map(i => kept[i]);
-    frameMeta = idx.map((old, n) => Object.assign({}, frameMeta[old], { frame: n }));
-  } else {
-    frameMeta.forEach((m, n) => oldToNew.set(m.frame, n));
+  {
+    const mainIdx = [], secIdx = [];
+    frameMeta.forEach((m, i) => (m.pass === 3 ? secIdx : mainIdx).push(i));
+    let keepMain = mainIdx, keepSec = secIdx;
+    if (mainIdx.length > TARGET_TOTAL) {
+      keepMain = selectKeptIndices(mainIdx.map(i => frameMeta[i]), TARGET_TOTAL)
+        .map(j => mainIdx[j]);
+    }
+    if (secIdx.length > SECOND_PASS_TARGET) {
+      keepSec = selectKeptIndices(secIdx.map(i => frameMeta[i]), SECOND_PASS_TARGET)
+        .map(j => secIdx[j]);
+    }
+    const keepAll = keepMain.concat(keepSec).sort((a, b) => a - b);
+    selectionDropped = kept.length - keepAll.length;
+    // Thinned primary-walk views are traced in the intake ledger
+    // before the coverage snapshot is taken below.
+    if (coverageTracker) {
+      mainIdx.filter(i => !keepMain.includes(i))
+        .forEach(() => coverageTracker.traceOutside("selection-thinned"));
+    }
+    keepAll.forEach((old, n) => oldToNew.set(old, n));
+    kept = keepAll.map(i => kept[i]);
+    frameMeta = keepAll.map((old, n) => Object.assign({}, frameMeta[old], { frame: n }));
   }
   frameMeta.forEach((m, i) => { m.file = "frame_" + String(i).padStart(3, "0") + ".jpg"; });
+
+  // v3.2 records (native v1.3 shapes): the scale lock's own
+  // record, the initiation record, the coverage snapshot, the
+  // second-pass list and the region provenance. The underside is
+  // recorded FILLED whenever no second pass banked views — the
+  // runner-side trophy closes it algorithmically, and the record
+  // keeps filled-vs-measured distinct forever (theory §13).
+  const secondPassesArr = secondPassKind
+    ? [{ kind: secondPassKind, completed: secondKeptRaw > 0 }] : [];
+  const v13 = {
+    scaleLock: scaleMachine ? scaleMachine.record() : null,
+    intakeEntries: coverageTracker ? coverageTracker.intakeEntries() : null,
+    regionProvenance: buildRegionProvenance({
+      secondPass: secondPassesArr.length ? secondPassesArr[0] : null,
+      applyFill: true
+    })
+  };
+  const initiationRecord = initiationData ? buildInitiationRecord(initiationData) : null;
+  const coverageSnap = coverageTracker ? coverageTracker.snapshot() : null;
 
   // Audio close-out: stop the recorder, encode the session WAV,
   // read its rate back from its own header (never the request).
@@ -1304,7 +2036,7 @@ async function finishCapture() {
       };
     }
     audioSessionRecord = sess.record(droppedChirps);
-    ledger = buildEvidenceLedgerWeb(audioSessionRecord, frameMeta);
+    ledger = buildEvidenceLedgerWeb(audioSessionRecord, frameMeta, v13);
     await sess.close();
     if (audioSession === sess) audioSession = null;
   } else {
@@ -1314,7 +2046,7 @@ async function finishCapture() {
       duration_s: null, started_at_epoch_ms: null,
       unavailable_reason: audioUnavailableReason || "no audio session ran"
     };
-    ledger = buildEvidenceLedgerWeb(null, frameMeta);
+    ledger = buildEvidenceLedgerWeb(null, frameMeta, v13);
   }
 
   captureMeta = buildManifestV3({
@@ -1322,10 +2054,11 @@ async function finishCapture() {
     soundMode: scanSoundMode, label: currentLabel(),
     frames: frameMeta,
     stream: streamInfo, locks: lockInfo, passes: passStats,
-    attempts, gateDropped, selectionDropped,
+    attempts, gateDropped, pacingSkipped, selectionDropped,
     targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
     startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
-    audio: audioRecord, audioSession: audioSessionRecord, ledger
+    audio: audioRecord, audioSession: audioSessionRecord, ledger,
+    initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr
   });
   // camera tracks stop here (the session's mic track rides the same
   // stream); endCamera would also tear down the session, which is
@@ -1337,6 +2070,24 @@ async function finishCapture() {
 $("btn-start").onclick = startScan;
 $("btn-cancel").onclick = () => { endCamera(); show("home"); };
 $("btn-done").onclick = finishCapture;
+// v3.2 wiring: the tap layer, the denomination chips (DECLARED,
+// never detected), the scale skips and the second-pass choice.
+$("tap-layer").addEventListener("pointerdown", ev => {
+  if (scanPhase === "initiation") void onInitiationTap(ev);
+  else if (scanPhase === "scale") void onScaleTap(ev);
+});
+document.querySelectorAll("#denom-seg .seg-btn").forEach(b => {
+  b.onclick = () => {
+    denomId = b.dataset.denom;
+    document.querySelectorAll("#denom-seg .seg-btn").forEach(x =>
+      x.classList.toggle("active", x === b));
+  };
+});
+$("btn-skip-scale").onclick = skipScale;
+$("btn-skip-locking").onclick = skipLocking;
+$("btn-flip").onclick = () => beginSecondPass("flip");
+$("btn-bottom").onclick = () => beginSecondPass("bottom");
+$("btn-nobottom").onclick = () => { void finishCapture(); };
 
 // ---------- bundle (zip — JPEG frames stored; WAV + JSON deflated, v3.1) ----------
 // v3.1 bundle diet: JPEG frames are already compressed, so they stay
@@ -1560,12 +2311,17 @@ async function buildBundle() {
   $("btn-share").textContent = "Packing your scan…";
   $("btn-share").disabled = true;
   const files = kept.map((b, i) => ({ name: "frame_" + String(i).padStart(3, "0") + ".jpg", blob: b }));
+  // v3.2: the tap stills ride in the bundle under their native
+  // names — the initiation still is the scan's scope evidence,
+  // the scale still is the lock's first-read evidence.
+  if (initiationBlob) files.push({ name: "initiation.jpg", blob: initiationBlob });
+  if (scaleBlob) files.push({ name: "scale-still.jpg", blob: scaleBlob });
   // v3: the session sound recording rides in the bundle as
   // audio.wav — the same bundle shape the native app produces.
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.1 (web capture)" };
+                 made_with: "Scan the World test app v3.2 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });

@@ -27,8 +27,11 @@
     <ol class="steps">
       <li>Print the mat at <strong>100%</strong> — not “fit to page.”</li>
       <li><strong>Volume up, silent switch off.</strong> Every scan opens with two seconds of soft chirps — the sound checks. Hold the phone over the <strong>empty</strong> table where the object will sit and keep still until they finish.</li>
-      <li>Then put the object in the middle of the mat.</li>
-      <li>Tap Start and walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; just keep the object filling at least half the screen.</li>
+      <li>Then put the object in the middle of the mat and tap Start.</li>
+      <li><strong>Tap the object</strong> on the screen — that tap starts the scan and marks what you're scanning.</li>
+      <li>If there's a coin next to it, <strong>tap the coin</strong> too and pick its denomination. Keep adjusting until the size locks. No coin? Skip it — the scan is shape-only and says so.</li>
+      <li>Walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; the line under the camera tells you which side it still needs.</li>
+      <li>At the end you can <strong>flip the object</strong> (or tilt it onto its side) and scan the bottom too — or just finish.</li>
       <li>Use good light. Keep the object still. Quiet room — no TV or talking while you scan.</li>
     </ol>
     <p class="muted">I'm scanning on:</p>
@@ -62,7 +65,7 @@
     </div>
   </div>
 
-  <p class="foot">Test app v3 — browser capture with sound (photos + chirps in one file). The measuring tech underneath is the real thing; the game comes later.</p>
+  <p class="foot">Test app v3.2 — browser capture with sound (photos + chirps in one file), tap-to-start scanning and the size lock. The measuring tech underneath is the real thing; the game comes later.</p>
 </section>
 
 <!-- CAPTURE -->
@@ -75,13 +78,36 @@
   <div class="camera-wrap">
     <video id="cam" autoplay playsinline muted></video>
     <div id="prompt">Starting the camera…</div>
+    <div id="tap-layer" class="hidden"><div id="tap-dot" class="hidden"></div></div>
   </div>
   <div class="progress-track"><div id="progress-fill"></div></div>
+  <p id="guidance-line" class="guidance center hidden"></p>
   <p id="quality-line" class="center"><span id="quality-dot">●</span> <span id="quality-word">Getting ready…</span></p>
   <p id="audio-line" class="center muted">Sound: starting…</p>
   <p id="sharp-value" class="center">Sharpness: —</p>
   <div class="progress-track sharp-track"><div id="sharp-meter"></div></div>
-  <p class="muted center" id="progress-note">Just walk — the app takes photos on its own and checks each one with the same test the measuring side uses. Soft or badly lit photos aren't kept; the light above tells you when to slow down. A soft chirp sounds for each photo it keeps — that chirp is the sound half taking its own measurement from the same spot. The bar fills as this walking pass completes — it counts good photos, not how much of the object is covered.</p>
+  <p class="muted center" id="progress-note">Just walk — the app takes photos on its own and checks each one with the same test the measuring side uses. Soft or badly lit photos aren't kept; the light above tells you when to slow down. A soft chirp sounds for each photo it keeps — that chirp is the sound half taking its own measurement from the same spot. The line above the light steers you side to side as each side gets banked — it guides you by turns, it doesn't measure where your phone is. The bar fills as this walking pass completes.</p>
+  <div id="scale-ui" class="hidden">
+    <p class="muted" id="scale-ui-label">Which coin did you tap? You declare its size — the app never guesses a coin from the photo.</p>
+    <div class="seg" id="denom-seg">
+      <button type="button" data-denom="quarter-us" class="seg-btn active">Quarter</button>
+      <button type="button" data-denom="nickel-us" class="seg-btn">Nickel</button>
+      <button type="button" data-denom="penny-us" class="seg-btn">Penny</button>
+      <button type="button" data-denom="dime-us" class="seg-btn">Dime</button>
+    </div>
+    <p id="lock-word" class="hidden"></p>
+    <p id="lock-progress" class="muted hidden"></p>
+    <button id="btn-skip-scale" class="secondary">Skip — no size reference</button>
+    <button id="btn-skip-locking" class="secondary hidden">Stop — shape only is fine</button>
+  </div>
+  <div id="second-pass-ui" class="card hidden">
+    <h2>Want the bottom too?</h2>
+    <p id="coverage-word"></p>
+    <p id="scale-word" class="muted"></p>
+    <button id="btn-flip" class="primary">Flip it over — scan the other side</button>
+    <button id="btn-bottom" class="secondary">Scan the bottom — tilt it onto its side</button>
+    <button id="btn-nobottom" class="text-button wide">No — finish the scan</button>
+  </div>
   <button id="btn-done" class="primary" disabled>Done</button>
 </section>
 

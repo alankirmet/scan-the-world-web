@@ -115,6 +115,23 @@ button.secondary, .button.secondary {
 ul.coach { margin: 0; padding-left: 22px; }
 ul.coach li { margin: 8px 0; }
 
+/* v3.2: tap initiation, scale lock, coverage guidance, second pass */
+#tap-layer { position: absolute; inset: 0; z-index: 3; touch-action: manipulation; }
+#tap-dot {
+  position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+  border-radius: 50%; border: 3px solid #fff;
+  background: rgba(252, 188, 9, 0.55);
+  box-shadow: 0 0 0 2px rgba(17, 17, 17, 0.35);
+  pointer-events: none;
+}
+.guidance { font-size: 16px; font-weight: 600; margin: 8px 0 0; }
+#scale-ui { margin: 4px 0 10px; }
+#scale-ui .seg { margin: 8px 0 10px; }
+#lock-word { font-size: 17px; font-weight: 600; margin: 6px 0 2px; }
+#lock-progress { font-size: 14px; margin: 0 0 8px; }
+#second-pass-ui button { margin: 8px 0; }
+#second-pass-ui .text-button { margin: 0; }
+
 /* send */
 #big-code {
   font-size: 40px; font-weight: 800; letter-spacing: 0.12em; margin: 4px 0 0;
