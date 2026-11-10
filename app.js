@@ -6,7 +6,7 @@
 
 // ---------- small helpers ----------
 const $ = id => document.getElementById(id);
-const screens = ["home", "capture", "review", "send", "result"];
+const screens = ["home", "capture", "review", "groundtruth", "send", "result"];
 function show(name) {
   screens.forEach(s => $("screen-" + s).classList.toggle("hidden", s !== name));
   window.scrollTo(0, 0);
@@ -665,6 +665,13 @@ function buildInitiationRecord(p) {
   return {
     origin: { x: r4(p.origin.x), y: r4(p.origin.y) },
     targeting: "aim-dot",
+    // v3.5 (method gating, native parity): the scale stage's
+    // place in this scan's flow, in the native record's own
+    // vocabulary — 'scale-tap' when the method carries the tap
+    // stage, 'not-part-of-this-method' when the method has no
+    // coin stage at all (phone). A caller that never says (the
+    // pre-v3.5 harness shape) keeps the field off the record.
+    ...(p.scaleStage ? { scale_stage: p.scaleStage } : {}),
     // An explicit stillFile of null means the chain failed
     // before a photo existed — that null must survive; only a
     // MISSING stillFile (a caller that never says) defaults.
@@ -916,23 +923,52 @@ function buildEvidenceLedgerWeb(session, frames, v13) {
   };
 }
 
-const SCAN_METHODS_WEB = {
-  "print-sheet": { id: "print-sheet", name: "Print sheet", points: null, calibrated: true },
-  "phone": { id: "phone", name: "Phone camera", points: 5, calibrated: false }
-};
-
 // The v3 manifest: the v2 runner contract (code / paper / n_frames /
 // capture / frames_meta) PLUS the native-shaped extension blocks,
 // PLUS pipeline:"browser-web" on the document itself.
+// v3.5: the ground-truth block (native makeGroundTruth shape) —
+// the label stays the pre-scan pairing label; a measured
+// dimension the user enters AFTER the walk (the web Ground
+// Truth act) rides as the witness, provenance 'user-measured';
+// null remains the honest default when they didn't measure.
+// Present only when the scan carries a label or a measure.
+function buildGroundTruthWeb(info) {
+  const name = (info.label || "").trim();
+  const measured = info.measuredDimension || null;
+  if (!name && !measured) return null;
+  if (!measured) {
+    // Label only — the pre-v3.5 shape, unchanged: the label was
+    // typed before the scan, for pairing, and is not a measure.
+    return {
+      object_name: name || null,
+      measured_dimension: null,
+      provenance: {
+        source: "user-entered",
+        verified: false,
+        note: "Typed into the web app before the scan as the object label (for pairing A/B bundles). User-supplied — not verified by the app."
+      }
+    };
+  }
+  return {
+    object_name: name || null,
+    measured_dimension: { kind: measured.kind, value_mm: measured.valueMm },
+    provenance: {
+      source: "user-measured",
+      verified: false,
+      note: "Typed in by the user after capture. User-supplied ground truth — not verified by the app."
+    }
+  };
+}
+
 function buildManifestV3(info) {
   const method = SCAN_METHODS_WEB[info.methodId] || SCAN_METHODS_WEB["phone"];
   return {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3.4 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.5 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.4", build: 7, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.5", build: 8, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 initiation blocks (native manifest placement: they
@@ -980,23 +1016,26 @@ function buildManifestV3(info) {
     sync: {
       clock: "audio-context clock (the recorder's sample timeline) for chirp and frame offsets; device epoch ms recorded alongside",
       audio_started_at_epoch_ms: info.audio ? info.audio.started_at_epoch_ms : null,
-      note: "Chirp offsets are computed on the recording AudioContext's clock from the recorder's start frame, and each frame's offset uses the same clock at grab time. The browser's input path adds one constant latency to the recorded track; the server-side latency lock (BASELINE-PROTOCOL §2) exists to solve exactly that constant from the lock train — the pairing timestamps carry the same 'hint, sample truth in the WAV' status as the native app's."
+      note: "Chirp offsets are computed on the recording AudioContext's clock from the recorder's start frame, and each frame's offset uses the same clock at grab time. The browser's input path adds one constant delay to the recorded track; the measuring side works that constant out from the opening sound-check tones themselves, so the pairing timestamps are a starting hint — the sound file itself is the truth."
     },
-    sound_mode: info.soundMode === "silent" ? "silent" : "chirp",
+    // v3.5 (sound-off truth, native parity — Alan's 2026-11-10
+    // ruling): chirps off means NO recording exists, and the
+    // manifest says so in the native words, 'off-by-design', so
+    // the runner grades the sound side ABSTAINED by design
+    // exactly as it does a native bundle. 'silent' is retired
+    // as a manifest value (the setup toggle's own word is now
+    // chirps on/off — see the home screen).
+    sound_mode: info.soundMode === "silent" ? "off-by-design" : "chirp",
     label: info.label || null,
-    ground_truth: info.label ? {
-      object_name: info.label,
-      measured_dimension: null,
-      provenance: {
-        source: "user-entered",
-        verified: false,
-        note: "Typed into the web app before the scan as the object label (for pairing A/B bundles). User-supplied — not verified by the app."
-      }
-    } : null,
+    ground_truth: buildGroundTruthWeb(info),
     research_corpus_eligible: method.calibrated,
-    research_note: method.calibrated
-      ? "Web-capture scan (pipeline: browser-web) on a calibration method. Its sound recording is paired with that calibrated reference as research data (acoustic estimator unproven — data first)."
-      : "Web-capture scan (pipeline: browser-web), no calibration method. Its audio is still included.",
+    research_note: info.soundMode === "silent"
+      ? method.calibrated
+        ? "Web-capture scan (pipeline: browser-web) on a calibration method, but chirps were off: no sound was recorded at all, so there is no sound to pair with the calibrated reference as research data."
+        : "Web-capture scan (pipeline: browser-web), no calibration method. Chirps were off: no sound was recorded at all."
+      : method.calibrated
+        ? "Web-capture scan (pipeline: browser-web) on a calibration method. Its sound recording is paired with that calibrated reference as research data (acoustic estimator unproven — data first)."
+        : "Web-capture scan (pipeline: browser-web), no calibration method. Its audio is still included.",
     frames_meta: info.frames
   };
 }
@@ -1023,8 +1062,8 @@ class WebChirpSession {
     this.recording = false; this.truncated = false;
     this.grantedAudio = undefined; // undefined = not read yet; null = browser wouldn't say
     this.ua = (navigator && navigator.userAgent) || "";
-    // "chirp" (full protocol) or "silent" (Alan's A/B switch: no
-    // emission at all; recording continues). Set by startScan.
+    // "chirp" (full protocol) or "silent" (sound off: no
+    // emission and NO recording at all — v3.5). Set by startScan.
     this.soundMode = "chirp";
   }
   recCtxTime() {
@@ -1035,7 +1074,18 @@ class WebChirpSession {
     return t0 == null ? null : round3((ctxTime - t0) * 1000);
   }
   async prepare(stream) {
-    const track = stream && stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+    // v3.5 (sound-off truth — Alan's 2026-11-10 ruling, native
+    // parity): chirps OFF means the microphone is never read and
+    // no recording exists. The session prepares playback only —
+    // the recorder never starts, no ambient track is captured,
+    // and the record states the absence as by design.
+    const offByDesign = this.soundMode === "silent";
+    const track = !offByDesign && stream && stream.getAudioTracks
+      ? stream.getAudioTracks()[0] : null;
+    if (offByDesign) {
+      this.flags.push("sound-off-by-design-no-recording");
+      this.grantedAudio = null; // never read — there is no track
+    }
     if (track) {
       try { this.grantedAudio = track.getSettings ? (track.getSettings() || null) : null; }
       catch (e) { this.grantedAudio = null; }
@@ -1161,7 +1211,7 @@ class WebChirpSession {
   // Baseline phase, protocol order, one held pose over the empty
   // table: lock x5 -> 0.5 s silence -> background x8 (~2 s total).
   async runBaseline() {
-    if (this.soundMode === "silent") return null; // A/B switch: no emission at all
+    if (this.soundMode === "silent") return null; // sound off: no emission at all
     if (this.broken || !this.fs) {
       this.flags.push("baseline-not-run");
       return this.baselineFailure || "the sound checks could not run";
@@ -1244,12 +1294,15 @@ class WebChirpSession {
     if (!flags.includes("latency-lock-not-evaluated-on-device")) flags.push("latency-lock-not-evaluated-on-device");
     const lat = (this.ctx && (this.ctx.outputLatency || this.ctx.baseLatency)) || null;
     return {
-      // Alan's A/B switch, stated in the record itself: in silent
-      // mode the empty trains / pose_chirps lists mean "nothing was
-      // emitted, by the user's choice" — never a measured baseline.
-      mode: silent ? "silent" : "chirp",
+      // Sound-off truth (v3.5, native parity — Alan's ruling):
+      // chirps off means NO recording was made at all. The
+      // record's mode is the native word, 'off-by-design', and
+      // the empty trains / pose_chirps lists mean "nothing was
+      // emitted and nothing was recorded, by the user's choice"
+      // — never a measured baseline, never an ambient track.
+      mode: silent ? "off-by-design" : "chirp",
       baseline_note: silent
-        ? "Sound was OFF for this scan (the user's A/B choice): no baseline trains and no pose chirps were emitted. The empty trains and pose_chirps lists are an absence by design, not a measurement. The microphone recording is ambient room sound only."
+        ? "Sound was OFF for this scan (chosen at setup): no baseline trains and no pose chirps were emitted, and no sound was recorded at all — the microphone was never read. The empty trains and pose_chirps lists are an absence by design, not a measurement."
         : null,
       chirp_spec: {
         waveform: CHIRP_SPEC.waveform, f0_hz: CHIRP_SPEC.f0_hz, f1_hz: CHIRP_SPEC.f1_hz,
@@ -1329,7 +1382,24 @@ function browserDeviceBlock() {
 }
 
 // Scan method chosen on the home screen (persisted; default the
-// printed mat, matching the how-to instructions).
+// printed mat, matching the how-to instructions). v3.5 (method
+// gating, native parity — Alan's 2026-11-10 ruling): the web
+// method set IS the native MethodSelect set, same ids, names
+// and order (lib/methods.ts). The method composes the flow:
+// phone has NO coin stage at all (its manifest stamps the
+// initiation scale_stage 'not-part-of-this-method'); the coin
+// stage exists only inside the coin method; print-sheet and
+// cal-block keep the tap-scale stage they share with native.
+// 'coin' here is the tap-ritual coin method — the native
+// auto-finder stays unported (COORDINATOR-REPORT-WEB-3.3.md
+// names the four structural reasons; W-CAP-1 stays a known,
+// stated divergence).
+const SCAN_METHODS_WEB = {
+  "phone": { id: "phone", name: "Phone camera", points: 5, calibrated: false },
+  "print-sheet": { id: "print-sheet", name: "Print sheet", points: null, calibrated: true },
+  "coin": { id: "coin", name: "Coin", points: 10, calibrated: true },
+  "cal-block": { id: "cal-block", name: "Calibration block", points: 50, calibrated: true }
+};
 let scanMethodId = "print-sheet";
 try {
   const saved = localStorage.getItem("stw-method-v3");
@@ -1346,12 +1416,13 @@ function renderMethodSeg() {
   });
 }
 
-// Sound on/off (Alan's A/B switch, 2026-11-09): "chirp" = the full
-// protocol (baseline trains + per-pose chirps); "silent" = NO
-// chirps emitted at all — the microphone still records ambient
-// audio for the whole session and the frame pipeline is identical,
-// so a silent scan pairs against a chirp scan of the same object.
-// Persisted, default On.
+// Sound on/off (Alan's setup toggle): "chirp" = the full
+// protocol (baseline trains + per-pose chirps, sound recorded);
+// "silent" (the stored value's name is kept so an existing
+// preference still reads) = NO chirps and NO recording at all —
+// the microphone is never read (Alan's 2026-11-10 ruling, the
+// native sound_mode 'off-by-design'). The frame pipeline is
+// identical either way. Persisted, default On.
 let scanSoundMode = "chirp";
 try {
   const savedSound = localStorage.getItem("stw-sound-v3");
@@ -1483,7 +1554,7 @@ function audioLineText() {
   if (!audioSession) return "Sound: starting…";
   if (audioSession.baselineFailure) return "Sound: the checks didn't work — photos still count";
   if (!audioSession.recording) return "Sound: unavailable — " + (audioUnavailableReason || "photos only this scan");
-  if (scanSoundMode === "silent") return "Sound: OFF for this scan — recording the room only, no chirps";
+  if (scanSoundMode === "silent") return "Sound: off for this scan — chirps off at setup; nothing is being recorded";
   return "Sound: recording — a soft chirp for every photo kept";
 }
 
@@ -1534,19 +1605,19 @@ function setPrompt() {
   if (aline) aline.textContent = audioLineText();
   const total = kept.length;
   $("kept-count").textContent = total + (total === 1 ? " photo" : " photos");
-  $("progress-fill").style.width =
-    Math.min(100, Math.round(100 * keptThisPass / (passIndex === 2 ? SECOND_PASS_TARGET : PASS_TARGET))) + "%";
+  // v3.5 (W-WALK-1/2): the count-target fill bar and the
+  // sharpness meter are GONE — the coverage segments (banked
+  // counts, below) are the walk's only progress display, and
+  // sharpness is a word here, never a gauge.
   const q = qualityState();
   $("quality-dot").style.color = q.color;
   $("quality-word").textContent = q.word;
-  const meter = $("sharp-meter"), val = $("sharp-value");
-  if (lastScore == null) { val.textContent = "Sharpness: —"; meter.style.width = "0%"; }
+  const val = $("sharp-value");
+  if (lastScore == null) { val.textContent = "Sharpness: —"; }
   else {
     const ok = lastScore >= GATE_LIMITS.SHARPNESS_MIN;
     val.textContent = "Sharpness: " + Math.round(lastScore) + (ok ? " — good" : " — too soft, not kept");
     val.style.color = ok ? "var(--good)" : "var(--warn)";
-    meter.style.width = Math.min(100, Math.round(100 * lastScore / (GATE_LIMITS.SHARPNESS_MIN * 2))) + "%";
-    meter.style.background = ok ? "var(--good)" : "var(--warn)";
   }
   const doneBtn = $("btn-done");
   if (scanPhase === "choice" || scanPhase === "initiation") {
@@ -1798,11 +1869,11 @@ async function captureAttempt() {
     // v3: ONE chirp for this kept frame's pose (the aperture look).
     // Fire-and-forget on the audio clock; a failure is recorded in
     // the session and the photo is kept regardless (native parity).
-    // Silent mode (A/B switch off): never called — no emission.
+    // Sound off: never called — no emission, no recording.
     // v3.2: the second pass (passIndex 2) emits NO pose chirps —
     // like native's second pass it is a separate act whose frames
     // carry no chirp pairing in the primary session record; the
-    // frames' ambient audio offsets stay real (one recording).
+    // frames' audio offsets stay real (one recording, chirps on).
     if (audioSession && scanSoundMode === "chirp" && passIndex < 2) {
       const rec = audioSession.emitPoseChirp(kept.length - 1, passIndex + 1, grabEpoch);
       const fm = frameMeta[frameMeta.length - 1];
@@ -1928,22 +1999,33 @@ async function startScan() {
   // session locks is the route the whole capture uses (protocol
   // §1). Mic constraints ask for the browser's processing OFF —
   // what was actually granted is read back and recorded.
+  // v3.5 (sound-off truth): when chirps are OFF the microphone
+  // is never requested at all — the stream asks for video only,
+  // so a sound-off scan cannot record even ambient room sound.
   const videoReq = { facingMode: "environment", width: { ideal: 2560 } };
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: AUDIO_CONSTRAINTS_ASKED });
-  } catch (e) {
-    audioUnavailableReason = "the microphone was not allowed — photos only this scan";
+  if (scanSoundMode === "silent") {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: false });
-    } catch (e2) {
+    } catch (e) {
       stream = null;
+    }
+  } else {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: AUDIO_CONSTRAINTS_ASKED });
+    } catch (e) {
+      audioUnavailableReason = "the microphone was not allowed — photos only this scan";
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: false });
+      } catch (e2) {
+        stream = null;
+      }
     }
   }
   if (!stream) {
     $("prompt").textContent = "The camera didn't start. Allow camera access and try again.";
     return;
   }
-  if (!stream.getAudioTracks().length && !audioUnavailableReason) {
+  if (scanSoundMode !== "silent" && !stream.getAudioTracks().length && !audioUnavailableReason) {
     audioUnavailableReason = "the browser gave no microphone — photos only this scan";
   }
   try {
@@ -1964,15 +2046,16 @@ async function startScan() {
     persistLabel();
     audioSession = new WebChirpSession();
     audioSession.soundMode = scanSoundMode;
-    await audioSession.prepare(stream);
+    if (scanSoundMode !== "silent") await audioSession.prepare(stream);
     if (scanCancelled) return;
-    if (!audioSession.recording && !audioUnavailableReason) {
+    if (scanSoundMode !== "silent" && !audioSession.recording && !audioUnavailableReason) {
       audioUnavailableReason = audioSession.recFailure || "sound recording did not start — photos only this scan";
     }
     if (scanSoundMode === "silent") {
-      // A/B switch OFF: no baseline, no chirps. The microphone
-      // keeps recording the room throughout. v3.2: the
-      // initiation comes first, then the walk (v3.4: aim-dot).
+      // Sound OFF (Alan's ruling): no baseline, no chirps, and
+      // NO recording — the session was never prepared, the
+      // microphone was never requested. The initiation comes
+      // first, then the walk (v3.4: aim-dot).
       enterInitiation();
       return;
     }
@@ -2147,11 +2230,32 @@ function scaleReadFrom(canvas) {
   return true;
 }
 
+// v3.5 method gating (native parity — Alan's 2026-11-10
+// ruling): the method composes the flow. The phone method's
+// flow contains NO coin stage at all; the coin stage exists
+// only inside the coin method (print-sheet and cal-block keep
+// the tap-scale stage they share with native's tap flows).
+function methodHasScaleStage() {
+  return scanMethodId === "coin" || scanMethodId === "print-sheet" ||
+    scanMethodId === "cal-block";
+}
+function scaleStageWord() {
+  return methodHasScaleStage() ? "scale-tap" : "not-part-of-this-method";
+}
+
 // The initiation stands (origin set, the still recorded
-// either way) — route to the web flow's next stage. Every web
-// method carries the scale-tap stage (there is no web coin
-// method), so every completed initiation lands here.
+// either way) — route to the flow's next stage, composed from
+// the method: methods with a scale stage go to the tap; the
+// phone method goes straight to the walk — no coin stage
+// exists in its flow to land on.
 function advanceAfterInitiation() {
+  if (!methodHasScaleStage()) {
+    scanPhase = "walk";
+    capturing = true;
+    setPrompt();
+    startCaptureLoop();
+    return;
+  }
   scaleMachine = new ScaleLockMachine(denominationById(denomId));
   scanPhase = "scale";
   setPrompt();
@@ -2227,6 +2331,7 @@ async function onSetTarget() {
         ? "Boundary grown from the aim point on the initiation still (seeded region grow, analysis frame ≤512 px). The initiation still is the evidence."
         : "The region grow from the aim point did not settle on a plausible boundary on the initiation still — recorded as failed; the scan is scoped by the aim point alone.",
       scaleTap: null,
+      scaleStage: scaleStageWord(),
       stillFile: "initiation.jpg",
       sceneLiveUntil: "no-scale-tap"
     };
@@ -2276,6 +2381,7 @@ function startScanFromAim() {
       ? pending.boundaryNote
       : "You started the scan before the initiation still finished — no boundary was grown from it. The scan is scoped by the aim point alone.",
     scaleTap: null,
+    scaleStage: scaleStageWord(),
     stillFile: pending ? pending.stillFile : null,
     sceneLiveUntil: "no-scale-tap"
   };
@@ -2533,7 +2639,11 @@ async function finalizeCapture() {
       targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
       startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
       audio: audioRecord,
-      initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr
+      initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr,
+      // v3.5: the Ground Truth act's measured dimension (native
+      // shape { kind, valueMm }), set by showGroundTruth when
+      // the user enters one; null = they didn't measure.
+      measuredDimension: null
     }
   };
   // camera tracks stop here (the session's mic track rides the same
@@ -2603,7 +2713,45 @@ function updateReviewLine() {
     warn.textContent = "";
   }
   $("btn-pack").disabled = send === 0;
-  $("btn-pack").textContent = send === total ? "Pack the scan" : "Pack the scan — " + send + " photos";
+  $("btn-pack").textContent = "Next — label it";
+}
+// ---------- v3.5 Ground Truth act (native parity) ----------
+// Native's post-walk screen, in its own words: "Did you measure
+// it?" — the one user-supplied witness the accuracy program
+// leans on (the MZEN08 fix). It sits between the photo check
+// and the pack: the review's drops are final when this screen
+// shows; confirming here records the witness into packCtx and
+// runs the pack exactly as the review's button used to.
+const GT_DIM_KINDS_WEB = ["length", "height", "diameter", "width"];
+let gtKindWeb = "length";
+function renderGtKinds() {
+  document.querySelectorAll("#gt-kind-seg .seg-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.kind === gtKindWeb);
+    b.onclick = () => { gtKindWeb = b.dataset.kind; renderGtKinds(); };
+  });
+}
+function showGroundTruth() {
+  if (!packCtx) return;
+  gtKindWeb = "length";
+  renderGtKinds();
+  const inp = $("gt-mm-input");
+  if (inp) inp.value = "";
+  const keepN = kept.length - reviewExcluded.size;
+  const line = $("gt-status");
+  if (line) line.textContent = keepN + (keepN === 1 ? " photo" : " photos") +
+    " will be packed · " + (SCAN_METHODS_WEB[scanMethodId] || {}).name +
+    (scanSoundMode === "silent" ? " · sound off — nothing recorded" : " · sound recorded");
+  show("groundtruth");
+}
+function confirmGroundTruth() {
+  if (!packCtx) return;
+  const raw = ($("gt-mm-input").value || "").trim().replace(",", ".");
+  const mm = parseFloat(raw);
+  packCtx.buildArgs.measuredDimension =
+    Number.isFinite(mm) && mm > 0
+      ? { kind: gtKindWeb, valueMm: Math.round(mm * 10) / 10 }
+      : null;
+  applyPruneAndPack();
 }
 // Confirm the review: apply the pruning (frames renumber, the
 // dropped frames' pose chirps un-pair and count, the act is
@@ -2668,7 +2816,8 @@ document.querySelectorAll("#denom-seg .seg-btn").forEach(b => {
 });
 $("btn-skip-scale").onclick = skipScale;
 $("btn-skip-locking").onclick = skipLocking;
-$("btn-pack").onclick = applyPruneAndPack;
+$("btn-pack").onclick = showGroundTruth;
+$("btn-gt-confirm").onclick = confirmGroundTruth;
 $("btn-flip").onclick = () => beginSecondPass("flip");
 $("btn-bottom").onclick = () => beginSecondPass("bottom");
 $("btn-nobottom").onclick = () => { void finishCapture(); };
@@ -2905,7 +3054,7 @@ async function buildBundle() {
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.4 (web capture)" };
+                 made_with: "Scan the World test app v3.5 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });

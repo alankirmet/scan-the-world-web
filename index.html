@@ -25,27 +25,31 @@
   <div class="card">
     <h2>How to test</h2>
     <ol class="steps">
-      <li>Print the mat at <strong>100%</strong> — not “fit to page.”</li>
-      <li><strong>Volume up, silent switch off.</strong> Every scan opens with two seconds of soft chirps — the sound checks. Hold the phone over the <strong>empty</strong> table where the object will sit and keep still until they finish.</li>
-      <li>Then put the object in the middle of the mat and tap Start.</li>
+      <li>If your method is the printed mat, print it at <strong>100%</strong> — not “fit to page.”</li>
+      <li>With sound on: <strong>volume up, silent switch off.</strong> Every scan opens with two seconds of soft chirps — the sound checks. Hold the phone over the <strong>empty</strong> table where the object will sit and keep still until they finish.</li>
+      <li>Then put the object in the middle and tap Start.</li>
       <li><strong>Line the dot up on the object</strong> in the middle of the camera and press <strong>◎ Set target</strong> — that starts the scan and marks what you're scanning.</li>
-      <li>If there's a coin next to it, <strong>tap the coin</strong> too and pick its denomination. Keep adjusting until the size locks. No coin? Skip it — the scan is shape-only and says so.</li>
+      <li>On the coin, sheet and block methods, <strong>tap anything whose size you know</strong> — a coin works — and pick its denomination. Keep adjusting until the size locks. Skip it and the scan is shape-only and says so. (The plain phone method has no size step at all — shape only, by design.)</li>
       <li>Walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; the five lines under the camera fill in side by side as each side gets banked, and if the light or your pace fights the camera it will say what's wrong in plain words.</li>
       <li>Once the top and sides are done the app says so — then you can <strong>flip the object</strong> (or tilt it onto its side) and scan the bottom too, or just finish.</li>
       <li>Before anything packs, you <strong>check the photos</strong>: every photo that would be sent is shown with its sharpness — tap any bad ones to leave them out.</li>
-      <li>Use good light. Keep the object still. Quiet room — no TV or talking while you scan.</li>
+      <li>Then the app asks one question: <strong>did you measure it?</strong> If you measured the object with a ruler, calipers or a tape, enter the size — it becomes the check the scan's size is graded against. Didn't measure? Leave it blank; a guessed number is worse than none.</li>
+      <li>Use good light. Keep the object still. Quiet room — no TV or talking while you scan (with sound on).</li>
     </ol>
-    <p class="muted">I'm scanning on:</p>
+    <p class="muted">How it works, in plain words: just walk — the app takes photos on its own and checks each one with the same test the measuring side uses. Soft or badly lit photos aren't kept; the light on the scan screen tells you when to slow down. A soft chirp sounds for each photo it keeps — that chirp is the sound half taking its own measurement from the same spot. The lines under the camera steer you side to side as each side gets banked — they guide you by turns; they don't measure where your phone is.</p>
+    <p class="muted">I'm scanning with:</p>
     <div class="seg" id="method-seg">
-      <button type="button" data-method="print-sheet" class="seg-btn active">The printed mat</button>
-      <button type="button" data-method="phone" class="seg-btn">Just the table</button>
+      <button type="button" data-method="phone" class="seg-btn">Phone camera</button>
+      <button type="button" data-method="print-sheet" class="seg-btn active">Print sheet</button>
+      <button type="button" data-method="coin" class="seg-btn">Coin</button>
+      <button type="button" data-method="cal-block" class="seg-btn">Calibration block</button>
     </div>
     <p class="muted">Sound:</p>
     <div class="seg" id="sound-seg">
       <button type="button" data-sound="chirp" class="seg-btn active">On — chirps</button>
       <button type="button" data-sound="silent" class="seg-btn">Off — silent</button>
     </div>
-    <p class="muted">Off means no chirps at all — the microphone still records the room, so a sound-off scan pairs against a sound-on scan of the same object.</p>
+    <p class="muted">Off means no chirps <strong>and no recording at all</strong> — the microphone is never even switched on. The scan is photos only.</p>
     <p class="muted">Label for this scan (optional — name the object, e.g. “wrench + quarter”):</p>
     <input id="label-input" type="text" placeholder="Object label" autocomplete="off">
   </div>
@@ -66,7 +70,7 @@
     </div>
   </div>
 
-  <p class="foot">Test app v3.4 — browser capture with sound (photos + chirps in one file), aim-dot targeting and the size lock, side-by-side coverage segments, plain-words problem coaching, the flip announced the moment the top is done, and a photo check before packing. The measuring tech underneath is the real thing; the game comes later.</p>
+  <p class="foot">Test app v3.5 — the four methods from the app (phone, print sheet, coin, block) with the flow composed from your choice; sound off now means no recording at all; the walk screen carries only the banked-coverage lines; a photo check and a "did you measure it?" step before packing. The measuring tech underneath is the real thing; the game comes later.</p>
 </section>
 
 <!-- CAPTURE -->
@@ -82,7 +86,6 @@
     <div id="prompt">Starting the camera…</div>
     <div id="tap-layer" class="hidden"><div id="tap-dot" class="hidden"></div></div>
   </div>
-  <div class="progress-track"><div id="progress-fill"></div></div>
   <div id="coverage-segments" class="hidden"></div>
   <p id="guidance-line" class="guidance center hidden"></p>
   <p id="underside-note" class="guidance center hidden"></p>
@@ -90,8 +93,6 @@
   <p id="problem-line" class="center hidden"></p>
   <p id="audio-line" class="center muted">Sound: starting…</p>
   <p id="sharp-value" class="center">Sharpness: —</p>
-  <div class="progress-track sharp-track"><div id="sharp-meter"></div></div>
-  <p class="muted center" id="progress-note">Just walk — the app takes photos on its own and checks each one with the same test the measuring side uses. Soft or badly lit photos aren't kept; the light above tells you when to slow down. A soft chirp sounds for each photo it keeps — that chirp is the sound half taking its own measurement from the same spot. The line above the light steers you side to side as each side gets banked — it guides you by turns, it doesn't measure where your phone is. The bar fills as this walking pass completes.</p>
   <div id="aim-ui" class="hidden">
     <button id="btn-set-target" class="primary">◎ Set target</button>
     <button id="btn-start-aim" class="secondary hidden">Start scan</button>
@@ -99,10 +100,10 @@
   <div id="scale-ui" class="hidden">
     <p class="muted" id="scale-ui-label">Which coin did you tap? You declare its size — the app never guesses a coin from the photo.</p>
     <div class="seg" id="denom-seg">
-      <button type="button" data-denom="quarter-us" class="seg-btn active">Quarter</button>
-      <button type="button" data-denom="nickel-us" class="seg-btn">Nickel</button>
-      <button type="button" data-denom="penny-us" class="seg-btn">Penny</button>
-      <button type="button" data-denom="dime-us" class="seg-btn">Dime</button>
+      <button type="button" data-denom="quarter-us" class="seg-btn active">Quarter · 24.26 mm</button>
+      <button type="button" data-denom="nickel-us" class="seg-btn">Nickel · 21.21 mm</button>
+      <button type="button" data-denom="penny-us" class="seg-btn">Penny · 19.05 mm</button>
+      <button type="button" data-denom="dime-us" class="seg-btn">Dime · 17.91 mm</button>
     </div>
     <p id="lock-word" class="hidden"></p>
     <p id="lock-progress" class="muted hidden"></p>
@@ -131,7 +132,27 @@
     <p id="review-warn" class="hidden"></p>
   </div>
   <div id="review-grid"></div>
-  <button id="btn-pack" class="primary">Pack the scan</button>
+  <button id="btn-pack" class="primary">Next — label it</button>
+</section>
+
+<!-- GROUND TRUTH (v3.5: the measured-dimension act, native parity) -->
+<section id="screen-groundtruth" class="screen hidden">
+  <header>
+    <h1>Nice walk. Two quick labels — both optional.</h1>
+    <p class="sub" id="gt-status">…</p>
+  </header>
+  <div class="card">
+    <h2>Did you measure it? (ruler, calipers, tape)</h2>
+    <p class="muted">Only fill this in if you really measured it. Your number is saved as your measurement — it lets the scan's size be checked later. A guessed number is worse than none.</p>
+    <div class="seg" id="gt-kind-seg">
+      <button type="button" data-kind="length" class="seg-btn active">Length</button>
+      <button type="button" data-kind="height" class="seg-btn">Height</button>
+      <button type="button" data-kind="diameter" class="seg-btn">Diameter</button>
+      <button type="button" data-kind="width" class="seg-btn">Width</button>
+    </div>
+    <input id="gt-mm-input" type="text" inputmode="decimal" placeholder="Measured size in mm — leave blank if you didn't measure" autocomplete="off">
+  </div>
+  <button id="btn-gt-confirm" class="primary">Pack the scan</button>
 </section>
 
 <!-- SEND -->
@@ -142,7 +163,7 @@
     <p id="big-code">——————</p>
   </header>
   <div class="card">
-    <p>Your photos <strong>and the sound recording</strong> are packed into one file. Send it to <strong>Homie</strong> in your Muse chat. When the measuring is done, your result shows up here under this code.</p>
+    <p>Your scan — photos, and the sound recording when sound was on — is packed into one file. Send it to <strong>Homie</strong> in your Muse chat. When the measuring is done, your result shows up here under this code.</p>
     <p class="muted" id="bundle-size"></p>
     <p class="muted" id="send-note">Measuring usually takes about 20 minutes.</p>
   </div>

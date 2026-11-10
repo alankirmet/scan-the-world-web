@@ -1,7 +1,7 @@
 /* Scan the World test app — app shell cache. Results are always fetched
    fresh (network only), so a newly published result appears without an
    app update. */
-const CACHE = "stw-shell-v9"; // v3.4: fresh cache name — a new build must never ride the old shell (iOS stale-cache lesson)
+const CACHE = "stw-shell-v10"; // v3.5: fresh cache name — a new build must never ride the old shell (iOS stale-cache lesson)
 const SHELL = ["./", "index.html", "style.css", "app.js", "pcm-worklet.js", "manifest.webmanifest",
                "icons/icon-192.png", "icons/icon-512.png", "icons/icon-180.png"];
 self.addEventListener("install", e => {

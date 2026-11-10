@@ -79,7 +79,7 @@ button.secondary, .button.secondary {
 }
 .seg-btn.active { border-color: var(--ink); background: var(--ink); color: #fff; }
 #audio-line { font-size: 15px; margin: 4px 0 0; }
-#label-input {
+#label-input, #gt-mm-input {
   width: 100%; font: inherit; padding: 12px 14px; margin-top: 8px;
   border: 1.5px solid var(--line); border-radius: 12px;
 }
@@ -102,16 +102,12 @@ button.secondary, .button.secondary {
   background: rgba(17,17,17,0.82); color: #fff; border-radius: 12px;
   padding: 12px 14px; font-size: 18px; font-weight: 600; text-align: center;
 }
-.progress-track {
-  height: 10px; background: var(--line); border-radius: 6px; margin: 14px 0 6px; overflow: hidden;
-}
-#progress-fill { height: 100%; width: 0%; background: var(--ink); border-radius: 6px; transition: width 0.3s; }
-#progress-note { font-size: 14px; margin: 4px 0 10px; }
+/* v3.5: the count-target progress track, the sharpness meter and
+   the walk-screen lecture are deleted (W-WALK-1/2/3) — the banked
+   coverage segments below are the walk's only progress display. */
 #quality-line { font-size: 17px; font-weight: 700; margin: 10px 0 0; }
 #quality-dot { font-size: 14px; vertical-align: 2px; }
 #sharp-value { font-size: 15px; font-weight: 600; margin: 6px 0 2px; }
-.sharp-track { margin: 4px 0 6px; }
-#sharp-meter { height: 100%; width: 0%; background: var(--good); border-radius: 6px; transition: width 0.3s; }
 ul.coach { margin: 0; padding-left: 22px; }
 ul.coach li { margin: 8px 0; }
 
