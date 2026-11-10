@@ -968,7 +968,7 @@ function buildManifestV3(info) {
     n_frames: info.frames.length,
     made_with: "Scan the World test app v3.5 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.5", build: 8, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.6", build: 9, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 initiation blocks (native manifest placement: they
@@ -1007,6 +1007,10 @@ function buildManifestV3(info) {
       target_frames: info.targetFrames,
       cap_frames: info.capFrames,
       frame_max_px: info.frameMaxPx != null ? info.frameMaxPx : 1600,
+      // v3.6 region diet (BUNDLE-SIZE-AUDIT-2026-11-10): plain
+      // words, per frame the frames_meta `diet` field says which
+      // form that frame took ("region" or the "plain" fallback).
+      frame_diet: "orbit frames ship region-aware: the object's box at full quality, the rest of the frame at JPEG 0.45, final encode 0.88, longest side at most 1600 px; a frame whose region does not settle ships plain (longest side at most 1600 px, JPEG 0.85). Stills (initiation, scale) ship plain — the scale still is measurement evidence.",
       started_at_epoch_ms: info.startedAtEpochMs,
       finished_at_epoch_ms: info.finishedAtEpochMs
     },
@@ -1460,6 +1464,22 @@ const PASS_TARGET = 12, PASS_CAP = 16;      // kept photos per pass
 const TARGET_TOTAL = 24, CAP_TOTAL = 32;    // the smart frame budget
 const FRAME_MAX_PX = 1600;                  // v3.1 bundle diet: bundled frames are capped at this long edge
 const FRAME_JPEG_QUALITY_CAPPED = 0.85;     // JPEG quality used for a frame downscaled to the cap
+// v3.6 REGION DIET (BUNDLE-SIZE-AUDIT-2026-11-10, diet round 2):
+// orbit frames ship REGION-AWARE — the object's box (grown from
+// the aim seed, tracked frame to frame) at the source's own
+// pixels, the rest of the frame re-encoded at
+// REGION_OUTER_QUALITY, the composite at REGION_FINAL_QUALITY.
+// Proven on 6FLZH1 through the production photo-measure: the
+// estimate moved +0.2 mm (449.4 vs 449.2) while frame bytes fell
+// 52% (mask form) / 49% (the box form shipped here, 448.7 mm).
+// The uniform 1280 px downscale was REJECTED with its numbers
+// (a systematic −7.9 mm / −1.8% shift in the scale witness).
+// Stills (initiation, scale) keep the plain v3.1 diet — the
+// scale still is measurement evidence and is not region-encoded.
+const REGION_OUTER_QUALITY = 0.45;          // JPEG quality outside the object's box
+const REGION_FINAL_QUALITY = 0.88;          // JPEG quality of the shipped composite
+const REGION_MARGIN_FRAC = 0.06;            // box margin, fraction of frame width/height (the proof's margin)
+const REGION_MIN_FRAC = 0.002, REGION_MAX_FRAC = 0.7; // the initiation grow's plausibility band
 const DONE_MIN = 20;                        // Done unlocks here
 const ATTEMPT_MS = 130;                     // pause between gate attempts
 const KEEP_GAP_MS = 300;                    // min spacing between keeps
@@ -1754,6 +1774,88 @@ function encodeBundleFrame(src) {
     .then(blob => ({ blob, width: bw, height: bh }));
 }
 
+// ---------- v3.6 region diet (orbit frames only) ----------
+// The seed is the aim point (the initiation origin); each banked
+// frame's grown box centre becomes the next frame's seed, so the
+// box tracks the object as the walk moves it. A grow that does
+// not settle in the plausibility band abstains for that frame
+// only — the frame ships with the plain v3.1 diet and the last
+// good seed is kept. The seed resets at a pass change (a flipped
+// object is a new scene; the aim point re-seeds it).
+let regionSeedNorm = null;   // {x, y} in capped-frame coords, 0..1
+let regionSeedPass = -1;
+const regionCanvas = document.createElement("canvas");
+const regionOutCanvas = document.createElement("canvas");
+
+function cappedCanvas(src) {
+  const w = src.width, h = src.height, longEdge = Math.max(w, h);
+  if (longEdge <= FRAME_MAX_PX) return { canvas: src, width: w, height: h };
+  const s = FRAME_MAX_PX / longEdge;
+  const bw = Math.round(w * s), bh = Math.round(h * s);
+  bundleCanvas.width = bw; bundleCanvas.height = bh;
+  bundleCanvas.getContext("2d").drawImage(src, 0, 0, bw, bh);
+  return { canvas: bundleCanvas, width: bw, height: bh };
+}
+
+function blobToDrawable(blob) {
+  if (window.createImageBitmap) return createImageBitmap(blob);
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob);
+    const im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); res(im); };
+    im.onerror = (e) => { URL.revokeObjectURL(url); rej(e); };
+    im.src = url;
+  });
+}
+
+// The bundled photo for a WALK frame (v3.6 region diet): the
+// object's box at the capped canvas's own pixels, everything
+// outside it re-encoded at REGION_OUTER_QUALITY, the composite
+// at REGION_FINAL_QUALITY. Any failure along the way — no seed,
+// an unsettled grow, a decode error — ships the plain v3.1 diet
+// for that frame instead; the diet never loses a frame.
+async function encodeOrbitFrame(src) {
+  try {
+    const cap = cappedCanvas(src);
+    if (!regionSeedNorm) { const fb = await encodeBundleFrame(src); fb.diet = "plain"; return fb; }
+    const cctx = cap.canvas.getContext("2d", { willReadFrequently: true });
+    const img = cctx.getImageData(0, 0, cap.width, cap.height);
+    const small = downscaleGray(img.data, cap.width, cap.height, 512);
+    const region = growRegion(small.gray, small.w, small.h,
+      regionSeedNorm.x * small.w, regionSeedNorm.y * small.h);
+    const frac = region.areaPx / (small.w * small.h);
+    if (!region.bbox || !(frac > REGION_MIN_FRAC && frac < REGION_MAX_FRAC)) {
+      const fb = await encodeBundleFrame(src); fb.diet = "plain"; return fb; // abstain: plain diet, seed kept
+    }
+    const f = small.factor;
+    const mw = REGION_MARGIN_FRAC * cap.width, mh = REGION_MARGIN_FRAC * cap.height;
+    const bx0 = Math.max(0, Math.floor(region.bbox.x0 * f - mw));
+    const by0 = Math.max(0, Math.floor(region.bbox.y0 * f - mh));
+    const bx1 = Math.min(cap.width, Math.ceil(region.bbox.x1 * f + mw));
+    const by1 = Math.min(cap.height, Math.ceil(region.bbox.y1 * f + mh));
+    regionSeedNorm = {
+      x: Math.min(1, Math.max(0, ((region.bbox.x0 + region.bbox.x1) / 2) * f / cap.width)),
+      y: Math.min(1, Math.max(0, ((region.bbox.y0 + region.bbox.y1) / 2) * f / cap.height))
+    };
+    regionCanvas.width = cap.width; regionCanvas.height = cap.height;
+    regionCanvas.getContext("2d").drawImage(cap.canvas, 0, 0);
+    const outerBlob = await new Promise(res =>
+      regionCanvas.toBlob(res, "image/jpeg", REGION_OUTER_QUALITY));
+    if (!outerBlob) { const fb = await encodeBundleFrame(src); fb.diet = "plain"; return fb; }
+    const outer = await blobToDrawable(outerBlob);
+    regionOutCanvas.width = cap.width; regionOutCanvas.height = cap.height;
+    const octx = regionOutCanvas.getContext("2d");
+    octx.drawImage(outer, 0, 0, cap.width, cap.height);
+    octx.drawImage(cap.canvas, bx0, by0, bx1 - bx0, by1 - by0, bx0, by0, bx1 - bx0, by1 - by0);
+    const blob = await new Promise(res =>
+      regionOutCanvas.toBlob(res, "image/jpeg", REGION_FINAL_QUALITY));
+    if (!blob) { const fb = await encodeBundleFrame(src); fb.diet = "plain"; return fb; }
+    return { blob, width: cap.width, height: cap.height, diet: "region" };
+  } catch (e) {
+    const fb = await encodeBundleFrame(src); fb.diet = "plain"; return fb; // the diet never loses a frame
+  }
+}
+
 // ---------- v3.3 banked-frame feedback effects ----------
 // The effect sink for planBankedFeedbackWeb's decisions. Every
 // call is guarded — a failed buzz or tick can never fail a
@@ -1847,7 +1949,16 @@ async function captureAttempt() {
     const now = performance.now();
     if (now - lastKeepAt < KEEP_GAP_MS) { pacingSkipped++; setPrompt(); return; }
     if (kept.length >= (passIndex === 2 ? CAP_TOTAL + SECOND_PASS_CAP : CAP_TOTAL)) { setPrompt(); return; }
-    const enc = await encodeBundleFrame(gateCanvas);
+    // v3.6: a new pass re-seeds the region diet from the aim
+    // point (a flipped object is a new scene); within a pass the
+    // seed tracks the last banked frame's grown box.
+    if (regionSeedPass !== passIndex) {
+      regionSeedPass = passIndex;
+      if (initiationData && initiationData.origin) {
+        regionSeedNorm = { x: initiationData.origin.x, y: initiationData.origin.y };
+      }
+    }
+    const enc = await encodeOrbitFrame(gateCanvas);
     const blob = enc.blob;
     if (!blob || !capturing) return;
     lastKeepAt = now;
@@ -1860,6 +1971,7 @@ async function captureAttempt() {
       highlight_frac: Math.round(res.highlightFrac * 10000) / 10000,
       shadow_frac: Math.round(res.shadowFrac * 10000) / 10000,
       width: enc.width, height: enc.height,
+      diet: enc.diet || "plain",
       captured_at_epoch_ms: grabEpoch,
       audio_offset_ms: grabCtx != null ? audioSession.offsetMs(grabCtx) : null,
       pose_chirp_audio_offset_ms: null,
@@ -2324,6 +2436,7 @@ async function onSetTarget() {
     const frac = region.areaPx / (st.small.w * st.small.h);
     const boundary = region.bbox && frac > 0.002 && frac < 0.7
       ? { area_px: region.areaPx, bbox: region.bbox } : null;
+    regionSeedNorm = { x: seed.x, y: seed.y }; // v3.6 region diet seed
     initiationData = {
       origin: { x: seed.x, y: seed.y },
       boundary,
@@ -2374,6 +2487,8 @@ function startScanFromAim() {
   tapBusy = false;
   const pending = pendingInitiation;
   const seed = aimSeedPoint() || { x: 0.5, y: 0.5 };
+  regionSeedNorm = pending ? { x: pending.origin.x, y: pending.origin.y }
+    : { x: seed.x, y: seed.y }; // v3.6 region diet seed
   initiationData = {
     origin: pending ? pending.origin : { x: seed.x, y: seed.y },
     boundary: null,
