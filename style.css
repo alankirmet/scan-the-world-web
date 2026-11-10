@@ -125,6 +125,9 @@ ul.coach li { margin: 8px 0; }
   pointer-events: none;
 }
 .guidance { font-size: 16px; font-weight: 600; margin: 8px 0 0; }
+/* v3.4: aim controls (Set target + the never-strand Start) */
+#aim-ui { margin: 4px 0 10px; }
+#aim-ui button { margin: 4px 0; }
 #scale-ui { margin: 4px 0 10px; }
 #scale-ui .seg { margin: 8px 0 10px; }
 #lock-word { font-size: 17px; font-weight: 600; margin: 6px 0 2px; }

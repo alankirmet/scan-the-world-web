@@ -189,11 +189,13 @@ function buildManifestV2(info) {
 
 // ==== V32 PURE BLOCK — no DOM; extracted by the v3 proof harness
 // ==== (tools/v3_proof) for its unit exercises. Ports of native
-// ==== v1.3's tap-initiation machinery (app-native/src/lib/
+// ==== v1.3's initiation machinery (app-native/src/lib/
 // ==== scaleLock.ts, segmentation.ts, provenance.ts, coverage.ts):
 // ==== the same rules and the same record shapes, so the runner
 // ==== and the evidence ledger read web and native bundles alike.
 // ==== The theory is ORIGIN-TAP-THEORY-2026-11-09.md §§2-5, 13.
+// ==== v3.4: the initiation record carries native v1.3.6's
+// ==== aim-dot targeting (see buildInitiationRecord below).
 
 // --- denominations: DECLARED by the user, never detected ---
 const COIN_DENOMINATIONS = [
@@ -652,13 +654,21 @@ function remapPoseChirpRecordsWeb(poseChirps, oldToNew) {
   return { records, dropped };
 }
 
-// The initiation record (native manifest shape): the tap IS the
-// scope of the scan, and the initiation still is its evidence.
+// The initiation record (native manifest shape). v3.4 — native
+// v1.3.6 parity: the centre aim dot IS the target, so the origin
+// is the dot's position (the frame centre by construction) and
+// `targeting` says how it was set. The initiation still is the
+// record's evidence; still_file is null when the still chain
+// failed before a photo existed — recorded, never faked.
 function buildInitiationRecord(p) {
   const r4 = v => Math.round(v * 10000) / 10000;
   return {
     origin: { x: r4(p.origin.x), y: r4(p.origin.y) },
-    still_file: "initiation.jpg",
+    targeting: "aim-dot",
+    // An explicit stillFile of null means the chain failed
+    // before a photo existed — that null must survive; only a
+    // MISSING stillFile (a caller that never says) defaults.
+    still_file: p.stillFile !== undefined ? p.stillFile : "initiation.jpg",
     boundary: p.boundary,
     boundary_note: p.boundaryNote,
     scale_tap: p.scaleTap ? { x: r4(p.scaleTap.x), y: r4(p.scaleTap.y) } : null,
@@ -794,7 +804,7 @@ async function wavRateFromBlob(blob) {
 // The evidence ledger — a port of native buildEvidenceLedger
 // (manifest.ts) over a web session record. Estimator-side groups
 // stay null + flag, exactly as native: never dressed as values.
-// v3.2: the optional third argument carries the v1.3 tap-initiation
+// v3.2: the optional third argument carries the v1.3 initiation
 // records (scale lock, intake ledger, region provenance); absent
 // (a pre-v3.2 flow) the groups ride as null + 'no_v13_initiation',
 // the same flag native writes when a bundle has no initiation.
@@ -920,19 +930,20 @@ function buildManifestV3(info) {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3.3 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.4 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.3", build: 6, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.4", build: 7, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
-    // v1.3 tap-initiation blocks (native manifest placement: they
-    // ride only when the flow produced them — every v3.2 scan does).
+    // v1.3 initiation blocks (native manifest placement: they
+    // ride only when the flow produced them — every v3.2+ scan
+    // does; v3.4's record carries aim-dot targeting).
     ...(info.initiation ? { initiation: info.initiation } : {}),
     ...(info.coverage ? { coverage: info.coverage } : {}),
     ...(info.secondPasses ? { second_passes: info.secondPasses } : {}),
     capture: {
       version: 4,
-      style: "tap initiation + declared scale lock, continuous orbit two passes (level, then higher), optional flip / scan-bottom second pass",
+      style: "aim-dot initiation + declared scale lock, continuous orbit two passes (level, then higher), optional flip / scan-bottom second pass",
       gate: {
         definition: "port of scanner-core gates.py check_frame — native-resolution grayscale Laplacian variance + exposure/clipping checks, always computed on the native-resolution canvas; since v3.1 the bundled frame is that canvas downscaled to the frame_max_px long edge (JPEG 0.85) when the stream is larger — gate scores are computed pre-downscale, and frames_meta records the bundled dimensions",
         sharpness_min: GATE_LIMITS.SHARPNESS_MIN,
@@ -1407,12 +1418,21 @@ let stream = null, capturing = false, attemptBusy = false,
 let audioSession = null, audioUnavailableReason = null,
     scanPhase = "starting", scanCancelled = false,
     bundleAudioBlob = null, captureStartedAt = 0;
-// v3.2 tap-initiation state (reset per scan in startScan)
+// v3.2 initiation state (reset per scan in startScan). v3.4:
+// the initiation is aim-dot (native v1.3.6) — aimLanded marks
+// that a Set target press has landed (the Start scan door
+// appears), aimNote carries the aim phase's transient words
+// (working / failed), pendingInitiation is a failed still
+// chain's recorded aim-point initiation that Start scan
+// promotes, and aimChainSeq retires a superseded still chain.
+// undersideAnnounced latches the flip-visibility announcement.
 let scanGen = 0, loopGen = 0,
     initiationData = null, scaleMachine = null, denomId = "quarter-us",
     scalePointNorm = null, initiationBlob = null, scaleBlob = null,
     coverageTracker = null, pacingSkipped = 0,
     tapBusy = false, lockAttempts = 0,
+    aimLanded = false, aimNote = null, pendingInitiation = null,
+    aimChainSeq = 0, undersideAnnounced = false,
     secondPassKind = null, choiceShown = false, finalizeStarted = false;
 // v3.3 pre-send pruning state: everything finalizeCapture computed,
 // held while the user reviews the frames; the manifest + bundle
@@ -1475,9 +1495,12 @@ function setPrompt() {
   } else if (scanPhase === "baseline-failed") {
     text = (audioSession && audioSession.baselineFailure) || "The sound checks didn't work — the photos still count.";
   } else if (scanPhase === "baseline-done") {
-    text = "Sound checks done — now put the object down and tap it.";
+    text = "Sound checks done — now put the object down and line the dot up on it.";
   } else if (scanPhase === "initiation") {
-    text = "Tap the object you want to scan.";
+    // v3.4: aim-dot targeting — the dot is the target; a
+    // transient aim note (working / that-didn't-take) outranks
+    // the standing instruction while it stands.
+    text = aimNote || "Line the dot up on the object, then press Set target.";
   } else if (scanPhase === "scale") {
     text = "Tap anything whose size you know — a coin works. Or skip: shape only is fine.";
   } else if (scanPhase === "locking") {
@@ -1526,10 +1549,11 @@ function setPrompt() {
     meter.style.background = ok ? "var(--good)" : "var(--warn)";
   }
   const doneBtn = $("btn-done");
-  if (scanPhase === "choice") {
-    // The second-pass card below carries the actions in this phase.
+  if (scanPhase === "choice" || scanPhase === "initiation") {
+    // The second-pass card carries the choice phase's actions;
+    // the aim controls carry the initiation phase's (v3.4).
     doneBtn.classList.add("hidden");
-  } else if (scanPhase === "initiation" || scanPhase === "scale" || scanPhase === "locking") {
+  } else if (scanPhase === "scale" || scanPhase === "locking") {
     doneBtn.classList.remove("hidden");
     doneBtn.disabled = true;
     doneBtn.textContent = "Done";
@@ -1541,11 +1565,50 @@ function setPrompt() {
       : "Done (need " + DONE_MIN + " photos)";
   }
   renderScaleUi();
+  renderAimUi();
   updateGuidance();
   renderCoverageSegments();
   renderProblemLine();
+  renderUndersideNote();
   const aimDot = $("aim-dot");
-  if (aimDot) aimDot.classList.toggle("hidden", !(scanPhase === "walk" || scanPhase === "walk2"));
+  // v3.4: the dot is up in the aim phase too — it IS the target
+  // there, not decoration (in the walk it stays the v3.3 banked-
+  // frame indicator).
+  if (aimDot) aimDot.classList.toggle("hidden",
+    !(scanPhase === "initiation" || scanPhase === "walk" || scanPhase === "walk2"));
+}
+
+// v3.4: the aim controls (native v1.3.6's aim phase furniture):
+// Set target is the phase's one action; Start scan appears once
+// a press has landed — the never-strand door that promotes the
+// aim point alone when the still chain failed or is still
+// running. Outside the aim phase both are gone.
+function renderAimUi() {
+  const ui = $("aim-ui");
+  if (!ui) return;
+  const inAim = scanPhase === "initiation";
+  ui.classList.toggle("hidden", !inAim);
+  if (!inAim) return;
+  $("btn-start-aim").classList.toggle("hidden", !aimLanded);
+}
+
+// v3.4: flip visibility — the moment primary coverage completes
+// during the walk, the underside choice is announced in words
+// on the walk screen (before that, a user mid-scan had no way
+// to know the flip existed until the end-of-walk card). The
+// latch is set here, off the tracker's own completeness, so
+// the announcement can only ever follow real banked coverage;
+// the end-of-walk card itself is unchanged.
+const UNDERSIDE_ANNOUNCE_WORD =
+  "Top and sides done — next you can flip it over or scan the bottom, or finish";
+function renderUndersideNote() {
+  const el = $("underside-note");
+  if (!el) return;
+  if (scanPhase === "walk" && coverageTracker && coverageTracker.isComplete())
+    undersideAnnounced = true;
+  const showIt = scanPhase === "walk" && undersideAnnounced;
+  el.textContent = showIt ? UNDERSIDE_ANNOUNCE_WORD : "";
+  el.classList.toggle("hidden", !showIt);
 }
 
 // v3.3: the coverage segment display (Qlone's clearable form,
@@ -1837,13 +1900,17 @@ async function startScan() {
   captureMeta = null; currentCode = newCode();
   audioSession = null; audioUnavailableReason = null; bundleAudioBlob = null;
   scanPhase = "starting"; scanCancelled = false; captureStartedAt = Date.now();
-  // v3.2 per-scan reset: tap initiation, scale lock, coverage,
-  // second pass — and the capture screen's v3.2 furniture.
+  // v3.2 per-scan reset: initiation, scale lock, coverage,
+  // second pass — and the capture screen's furniture. v3.4:
+  // the aim state resets with it, and any still chain from a
+  // previous scan is retired by the chain stamp.
   scanGen++;
   initiationData = null; scaleMachine = null; scalePointNorm = null;
   initiationBlob = null; scaleBlob = null;
   coverageTracker = new CoverageTracker();
   pacingSkipped = 0; tapBusy = false; lockAttempts = 0;
+  aimLanded = false; aimNote = null; pendingInitiation = null;
+  aimChainSeq++; undersideAnnounced = false;
   secondPassKind = null; choiceShown = false; finalizeStarted = false;
   packCtx = null; reviewExcluded = new Set(); reviewUrls = [];
   denomId = "quarter-us";
@@ -1904,8 +1971,8 @@ async function startScan() {
     }
     if (scanSoundMode === "silent") {
       // A/B switch OFF: no baseline, no chirps. The microphone
-      // keeps recording the room throughout. v3.2: the tap
-      // initiation comes first, then the walk.
+      // keeps recording the room throughout. v3.2: the
+      // initiation comes first, then the walk (v3.4: aim-dot).
       enterInitiation();
       return;
     }
@@ -1938,12 +2005,19 @@ function endCamera() {
   $("cam").srcObject = null;
 }
 
-// ---------- v3.2 tap initiation, scale lock, second pass ----------
-// The flow (native v1.3 parity; theory §§2-5, 13): baseline (or
-// silent) → tap the object → tap a known-size thing (or skip) →
-// the lock loop reads stills until three agree or the attempts
-// run out → the two-pass walk, steered by the coverage guidance →
-// the second-pass choice (Flip / Scan Bottom / finish) → pack.
+// ---------- initiation, scale lock, second pass ----------
+// The flow (theory §§2-5, 13): baseline (or silent) → set the
+// target → tap a known-size thing (or skip) → the lock loop
+// reads stills until three agree or the attempts run out →
+// the two-pass walk, steered by the coverage guidance → the
+// second-pass choice (Flip / Scan Bottom / finish) → pack.
+// v3.2 shipped the initiation as native v1.3's tap; v3.4 ports
+// native v1.3.6's AIM-DOT targeting (Alan's 2026-11-10
+// redesign): there is no tap layer on the camera in the aim
+// phase — the centre aim dot is the target, and the labelled
+// Set target button is the press. The scale stage keeps its
+// tap (the coin finder stays unported — COORDINATOR-REPORT-
+// WEB-3.3.md gives the four structural reasons).
 
 function recordPassStat() {
   const p = passIndex + 1;
@@ -1981,7 +2055,10 @@ function renderScaleUi() {
       "Reads so far: " + scaleMachine.readCount +
       " · steady streak: " + scaleMachine.streakCount + " of " + LOCK_READS_REQUIRED;
   }
-  $("tap-layer").classList.toggle("hidden", !(scanPhase === "initiation" || inScale));
+  // v3.4: the tap layer exists ONLY for the scale tap now —
+  // the aim phase has no tap layer at all (the dot is the
+  // target and Set target is a button, not a touch on glass).
+  $("tap-layer").classList.toggle("hidden", !inScale);
 }
 
 function enterInitiation() {
@@ -1990,23 +2067,40 @@ function enterInitiation() {
   setPrompt();
 }
 
-// Map a tap on the preview to normalised photo coordinates. The
-// preview element uses object-fit: cover, so the displayed frame
-// is a centre crop of the stream — the mapping undoes exactly
-// that crop (native's viewToPhoto, cover-fit form).
-function videoTapPoint(ev) {
+// Map a display point on the preview to normalised photo
+// coordinates. The preview element uses object-fit: cover, so
+// the displayed frame is a centre crop of the stream — the
+// mapping undoes exactly that crop (native's viewToPhoto,
+// cover-fit form).
+function displayToPhoto(clientX, clientY) {
   const video = $("cam");
   if (!video.videoWidth) return null;
   const rect = video.getBoundingClientRect();
   const vw = video.videoWidth, vh = video.videoHeight;
   const scale = Math.max(rect.width / vw, rect.height / vh);
   const ox = (rect.width - vw * scale) / 2, oy = (rect.height - vh * scale) / 2;
-  const cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+  const cx = clientX - rect.left, cy = clientY - rect.top;
   const clamp01 = v => Math.max(0, Math.min(1, v));
   return {
     nx: clamp01((cx - ox) / scale / vw), ny: clamp01((cy - oy) / scale / vh),
     dx: cx / rect.width, dy: cy / rect.height
   };
+}
+
+function videoTapPoint(ev) { return displayToPhoto(ev.clientX, ev.clientY); }
+
+// v3.4: the aim seed — the centre aim dot's position mapped
+// into the photo through the SAME cover-fit mapping (native
+// v1.3.6's viewToPhoto at the aim point (0.5, 0.5)). The crop
+// is centred, so the seed is the photo's centre by
+// construction; it is computed, not assumed, so the mapping
+// stays the single source of the conversion.
+function aimSeedPoint() {
+  const video = $("cam");
+  if (!video.videoWidth) return null;
+  const rect = video.getBoundingClientRect();
+  const p = displayToPhoto(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  return p ? { x: p.nx, y: p.ny } : null;
 }
 
 function showTapDot(p, isScale) {
@@ -2053,37 +2147,141 @@ function scaleReadFrom(canvas) {
   return true;
 }
 
-async function onInitiationTap(ev) {
-  if (scanPhase !== "initiation" || tapBusy) return;
-  const p = videoTapPoint(ev);
-  if (!p) return;
+// The initiation stands (origin set, the still recorded
+// either way) — route to the web flow's next stage. Every web
+// method carries the scale-tap stage (there is no web coin
+// method), so every completed initiation lands here.
+function advanceAfterInitiation() {
+  scaleMachine = new ScaleLockMachine(denominationById(denomId));
+  scanPhase = "scale";
+  setPrompt();
+}
+
+// v3.4 — Set target (native v1.3.6's onAimTarget, ported): the
+// user holds the centre aiming dot on the object and presses
+// the labelled button — a single press; aim, press, done. The
+// initiation still is taken at the press and the origin seed
+// is the dot's position, mapped into the still through the
+// cover-fit mapping (aimSeedPoint). The press is acknowledged
+// FIRST, before any async work. The never-strand machinery is
+// native's: the still chain is BOUNDED (the v1.3.2 lesson — a
+// stage that hangs must fail with a named reason, not silence),
+// and a failed chain records a pending initiation on the aim
+// point alone that Start scan promotes. "Aim again" remains,
+// but it is never the only door.
+const AIM_STILL_TIMEOUT_MS = 10000;
+async function onSetTarget() {
+  if (scanPhase !== "initiation") return;
+  if (tapBusy) {
+    // Even a swallowed press answers — never silence (native).
+    aimNote = "Still working on the last try — one moment…";
+    setPrompt();
+    return;
+  }
+  const seed = aimSeedPoint();
+  if (!seed) {
+    aimLanded = true;
+    pendingInitiation = {
+      origin: { x: 0.5, y: 0.5 }, stillFile: null,
+      boundaryNote: "The initiation still could not be taken — the camera frame wasn't ready. " +
+        "Recorded as failed; the scan is scoped by the aim point alone."
+    };
+    aimNote = "That didn't take — the camera frame wasn't ready. Aim again, or press Start scan to go with just the aim point.";
+    setPrompt();
+    return;
+  }
   tapBusy = true;
+  aimLanded = true;
+  aimChainSeq++;
+  const chain = aimChainSeq, gen = scanGen;
+  // Acknowledge FIRST: the ring pulses on the dot and the
+  // status line says what's happening.
+  const dot = $("aim-dot");
+  if (dot) { dot.classList.remove("pulse"); void dot.offsetWidth; dot.classList.add("pulse"); }
+  aimNote = "Got it — taking the still…";
+  setPrompt();
+  const stale = () => scanCancelled || gen !== scanGen || chain !== aimChainSeq || scanPhase !== "initiation";
   try {
-    const canvas = grabStillCanvas();
-    if (!canvas) return;
-    const enc = await encodeBundleFrame(canvas);
-    if (!enc.blob) return; // a failed still costs nothing — tap again
-    initiationBlob = enc.blob;
-    const st = analyseStill(canvas);
+    const work = (async () => {
+      const canvas = grabStillCanvas();
+      if (!canvas) throw new Error("the camera frame wasn't ready");
+      const enc = await encodeBundleFrame(canvas);
+      if (!enc.blob) throw new Error("the still could not be turned into a photo");
+      return { canvas, blob: enc.blob };
+    })();
+    const timeout = sleepMs(AIM_STILL_TIMEOUT_MS)
+      .then(() => { throw new Error("the still took too long"); });
+    const got = await Promise.race([work, timeout]);
+    if (stale()) return; // Start scan superseded this chain
+    initiationBlob = got.blob;
+    const st = analyseStill(got.canvas);
     const region = growRegion(st.small.gray, st.small.w, st.small.h,
-      p.nx * st.small.w, p.ny * st.small.h);
+      seed.x * st.small.w, seed.y * st.small.h);
     const frac = region.areaPx / (st.small.w * st.small.h);
     const boundary = region.bbox && frac > 0.002 && frac < 0.7
       ? { area_px: region.areaPx, bbox: region.bbox } : null;
     initiationData = {
-      origin: { x: p.nx, y: p.ny },
+      origin: { x: seed.x, y: seed.y },
       boundary,
       boundaryNote: boundary
-        ? "Boundary grown from the origin tap on the initiation still (seeded region grow, analysis frame ≤512 px). The initiation still is the evidence."
-        : "The region grow from the origin did not settle on a plausible boundary on the initiation still — recorded as failed; the scan is scoped by the tap point alone.",
+        ? "Boundary grown from the aim point on the initiation still (seeded region grow, analysis frame ≤512 px). The initiation still is the evidence."
+        : "The region grow from the aim point did not settle on a plausible boundary on the initiation still — recorded as failed; the scan is scoped by the aim point alone.",
       scaleTap: null,
+      stillFile: "initiation.jpg",
       sceneLiveUntil: "no-scale-tap"
     };
-    scaleMachine = new ScaleLockMachine(denominationById(denomId));
-    showTapDot(p, false);
-    scanPhase = "scale";
+    pendingInitiation = null;
+    aimNote = null;
+    advanceAfterInitiation();
+  } catch (e) {
+    if (stale()) return;
+    // The aim DID land: the origin is the aim point, whatever
+    // the still chain did. A photo captured before the failure
+    // (initiationBlob set) is preserved as bundle evidence and
+    // the record says so; with no photo, still_file is null.
+    const reason = e && e.message ? e.message : "the still failed";
+    const keptStill = initiationBlob != null;
+    pendingInitiation = {
+      origin: { x: seed.x, y: seed.y },
+      stillFile: keptStill ? "initiation.jpg" : null,
+      boundaryNote: "The initiation still could not be processed — " + reason + ". " +
+        (keptStill
+          ? "The still itself is kept in the bundle as evidence; no boundary was grown from it. "
+          : "") +
+        "Recorded as failed; the scan is scoped by the aim point alone."
+    };
+    aimNote = "That didn't take — " + reason +
+      ". Aim again, or press Start scan to go with just the aim point.";
     setPrompt();
   } finally { tapBusy = false; }
+}
+
+// Start scan from the aim phase (native v1.3.3's never-strand
+// door, carried into the aim flow). Promotes the aim point to
+// the initiation — carrying the recorded still failure when
+// the chain already failed, or an honest started-early record
+// when it is still in flight (the in-flight chain stands down
+// via the chain stamp) — and routes to the scale stage like
+// any completed initiation.
+function startScanFromAim() {
+  if (scanPhase !== "initiation") return;
+  aimChainSeq++; // an in-flight chain, if any, stands down
+  tapBusy = false;
+  const pending = pendingInitiation;
+  const seed = aimSeedPoint() || { x: 0.5, y: 0.5 };
+  initiationData = {
+    origin: pending ? pending.origin : { x: seed.x, y: seed.y },
+    boundary: null,
+    boundaryNote: pending
+      ? pending.boundaryNote
+      : "You started the scan before the initiation still finished — no boundary was grown from it. The scan is scoped by the aim point alone.",
+    scaleTap: null,
+    stillFile: pending ? pending.stillFile : null,
+    sceneLiveUntil: "no-scale-tap"
+  };
+  pendingInitiation = null;
+  aimNote = null;
+  advanceAfterInitiation();
 }
 
 async function onScaleTap(ev) {
@@ -2453,10 +2651,14 @@ $("btn-cancel").onclick = () => { endCamera(); show("home"); };
 $("btn-done").onclick = finishCapture;
 // v3.2 wiring: the tap layer, the denomination chips (DECLARED,
 // never detected), the scale skips and the second-pass choice.
+// v3.4: the tap layer serves ONLY the scale tap (the aim phase
+// has no tap layer — Set target is a button press), and the
+// aim controls get their own wiring.
 $("tap-layer").addEventListener("pointerdown", ev => {
-  if (scanPhase === "initiation") void onInitiationTap(ev);
-  else if (scanPhase === "scale") void onScaleTap(ev);
+  if (scanPhase === "scale") void onScaleTap(ev);
 });
+$("btn-set-target").onclick = () => { void onSetTarget(); };
+$("btn-start-aim").onclick = startScanFromAim;
 document.querySelectorAll("#denom-seg .seg-btn").forEach(b => {
   b.onclick = () => {
     denomId = b.dataset.denom;
@@ -2693,7 +2895,7 @@ async function buildBundle() {
   $("btn-share").textContent = "Packing your scan…";
   $("btn-share").disabled = true;
   const files = kept.map((b, i) => ({ name: "frame_" + String(i).padStart(3, "0") + ".jpg", blob: b }));
-  // v3.2: the tap stills ride in the bundle under their native
+  // v3.2: the stills ride in the bundle under their native
   // names — the initiation still is the scan's scope evidence,
   // the scale still is the lock's first-read evidence.
   if (initiationBlob) files.push({ name: "initiation.jpg", blob: initiationBlob });
@@ -2703,7 +2905,7 @@ async function buildBundle() {
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.3 (web capture)" };
+                 made_with: "Scan the World test app v3.4 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });
