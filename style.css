@@ -132,6 +132,63 @@ ul.coach li { margin: 8px 0; }
 #second-pass-ui button { margin: 8px 0; }
 #second-pass-ui .text-button { margin: 0; }
 
+/* v3.3: aim dot (centre aiming indicator; pulses gold on a bank) */
+#aim-dot {
+  position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
+  margin: -22px 0 0 -22px; z-index: 2; pointer-events: none;
+}
+#aim-dot .aim-ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1.5px rgba(17, 17, 17, 0.35);
+}
+#aim-dot .aim-centre {
+  position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+  margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1.5px rgba(17, 17, 17, 0.35);
+}
+#aim-dot.pulse .aim-ring { animation: aim-pulse 0.45s ease-out; }
+@keyframes aim-pulse {
+  0% { border-color: #fcbc09; box-shadow: 0 0 0 6px rgba(252, 188, 9, 0.55); }
+  100% { border-color: rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1.5px rgba(17, 17, 17, 0.35); }
+}
+
+/* v3.3: coverage segments — one row per part, one segment per
+   banked view the part needs; gold = banked, outline = next. */
+#coverage-segments { margin: 8px 0 2px; }
+.cov-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+.cov-label { width: 52px; font-weight: 600; font-size: 15px; }
+.cov-segs { display: flex; gap: 6px; flex: 1; }
+.cov-seg {
+  width: 34px; height: 12px; border-radius: 6px;
+  background: var(--line); display: block;
+}
+.cov-seg.banked { background: #fcbc09; }
+.cov-seg.next { background: var(--paper); border: 2px solid #fcbc09; height: 8px; }
+.cov-word { width: 64px; text-align: right; font-size: 14px; color: var(--muted); }
+
+/* v3.3: named-problem line */
+#problem-line { font-size: 16px; font-weight: 600; color: var(--warn); margin: 8px 0 0; }
+
+/* v3.3: pre-send review */
+#review-warn { color: var(--warn); font-weight: 600; }
+#review-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 6px;
+}
+.review-item {
+  position: relative; padding: 0; min-height: 0; width: 100%;
+  background: var(--card); border: 1.5px solid var(--line); border-radius: 12px;
+  overflow: hidden; text-align: left;
+}
+.review-item img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; }
+.review-cap { display: block; padding: 8px 10px; font-size: 13px; font-weight: 600; }
+.review-item.excluded { opacity: 0.45; border-color: var(--warn); }
+.review-badge {
+  position: absolute; top: 8px; right: 8px;
+  background: var(--warn); color: #fff; font-size: 12px; font-weight: 700;
+  padding: 3px 8px; border-radius: 999px;
+}
+
 /* send */
 #big-code {
   font-size: 40px; font-weight: 800; letter-spacing: 0.12em; margin: 4px 0 0;

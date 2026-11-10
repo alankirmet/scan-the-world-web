@@ -6,7 +6,7 @@
 
 // ---------- small helpers ----------
 const $ = id => document.getElementById(id);
-const screens = ["home", "capture", "send", "result"];
+const screens = ["home", "capture", "review", "send", "result"];
 function show(name) {
   screens.forEach(s => $("screen-" + s).classList.toggle("hidden", s !== name));
   window.scrollTo(0, 0);
@@ -497,6 +497,19 @@ class CoverageTracker {
     this.counter++;
     return this.trace("discarded", reason, null);
   }
+  // v3.3 (native v1.4.0 parity, coverage.ts traceGateFailure): a
+  // gate failure is traced WITH its failure names — the intake
+  // ledger names why every refused frame was refused, so nothing
+  // is dropped silently and the named-problem feedback has its
+  // record. Same entry shape as native's: outcome 'discarded',
+  // reason 'gate-failed', plus the failures list.
+  traceGateFailure(failures) {
+    this.counter++;
+    const e = { n: this.counter, outcome: "discarded", reason: "gate-failed", part: null };
+    e.failures = failures.slice();
+    this.intake.push(e);
+    return e;
+  }
   trace(outcome, reason, part) {
     const e = { n: this.counter, outcome, reason, part };
     this.intake.push(e);
@@ -517,6 +530,126 @@ class CoverageTracker {
       discarded_total: this.intake.filter(e => e.outcome === "discarded").length
     };
   }
+}
+
+// --- v3.3 additions (ports of native v1.4.0's incorporation
+// --- build: coverageDisplay.ts, feedback.ts, bankedFeedback.ts,
+// --- prune.ts — the same rules, the same words, so web and
+// --- native bundles and HUDs read alike. The theory is
+// --- INCORPORATION-PLAN-2026-11-10.md; the native report is
+// --- app-native/COORDINATOR-REPORT-1.4.0.md.)
+
+// Coverage segments (port of coverageDisplay.ts): the display
+// model is a PURE function of the coverage snapshot — a segment
+// is 'banked' only when the ledger counted a banked view into
+// that slot. No segment fills for time, attempts, or pacing.
+function coverageDisplayWeb(snap) {
+  const order = ["front", "right", "back", "left", "top"];
+  const labels = { front: "Front", right: "Right", back: "Back", left: "Left", top: "Top" };
+  let currentPart = "top";
+  for (const p of ["front", "right", "back", "left"]) {
+    if (snap.parts[p].banked < snap.parts[p].needed) { currentPart = p; break; }
+  }
+  const parts = order.map(part => {
+    const p = snap.parts[part];
+    const segments = [];
+    for (let i = 0; i < p.needed; i++) {
+      if (i < p.banked) segments.push("banked");
+      else if (!snap.frozen && part === currentPart && i === p.banked) segments.push("next");
+      else segments.push("waiting");
+    }
+    return {
+      part, label: labels[part], banked: p.banked, needed: p.needed, state: p.state,
+      segments,
+      word: p.state === "complete" ? "✓ done" : p.banked > 0 ? p.banked + " of " + p.needed : "not yet"
+    };
+  });
+  return {
+    parts,
+    bankedTotal: snap.banked_total,
+    totalSegments: parts.reduce((a, p) => a + p.needed, 0),
+    complete: snap.declared_complete,
+    frozen: snap.frozen
+  };
+}
+
+// Named problems (port of feedback.ts): capture problems are a
+// small set of NAMED states keyed by the gate's own failure
+// names, each with what the app DOES while it persists. The
+// advice words are the gate's COACHING lines, attached by the
+// display layer from the app's COACHING table (same strings —
+// the named state and the coaching can never disagree).
+const NAMED_PROBLEMS_WEB = {
+  "blurry": { id: "blurry", name: "Too blurry", behaviour: "Photos aren't banking while this lasts." },
+  "too dark": { id: "too dark", name: "Too dark", behaviour: "Photos aren't banking while it's this dark — the Apple rule: stop, don't bank garbage." },
+  "too bright": { id: "too bright", name: "Too bright", behaviour: "Photos aren't banking while this lasts." },
+  "highlights clipped": { id: "highlights clipped", name: "Too much glare", behaviour: "Photos aren't banking while this lasts." },
+  "shadows clipped": { id: "shadows clipped", name: "Deep shadows", behaviour: "Photos aren't banking while this lasts." }
+};
+// The dominant named problem in a window of recent failed
+// attempts. Named only on recurrence (>= minCount of the same
+// failure); ties break toward the most recent failure — the
+// window's tail is what the user is doing NOW (native rule).
+function dominantProblemWeb(recentFailures, minCount) {
+  minCount = minCount == null ? 2 : minCount;
+  const counts = {}, lastSeen = {};
+  recentFailures.forEach((failures, i) => {
+    for (const f of failures) {
+      if (!NAMED_PROBLEMS_WEB[f]) continue;
+      counts[f] = (counts[f] || 0) + 1;
+      lastSeen[f] = i;
+    }
+  });
+  let best = null, bestCount = 0, bestLast = -1;
+  for (const f in counts) {
+    const l = lastSeen[f];
+    if (counts[f] > bestCount || (counts[f] === bestCount && l > bestLast)) {
+      best = f; bestCount = counts[f]; bestLast = l;
+    }
+  }
+  if (!best || bestCount < minCount) return null;
+  return NAMED_PROBLEMS_WEB[best];
+}
+
+// Banked-frame feedback plan (port of bankedFeedback.ts): the
+// DECISION half only — the effect sink never guesses. Tone rule:
+// chirps ON ⇒ the frame's own pose chirp IS the tone ('pose-
+// chirp', never a second sound over the protocol); chirps OFF ⇒
+// a soft UI tick ('ui-tick'). Haptics: a plain bank is a tick, a
+// milestone (part / coverage complete) is the stronger buzz —
+// where the platform has no vibration (iOS Safari), the sink's
+// guarded call is a no-op and the gold pulse still shows.
+function planBankedFeedbackWeb(kind, chirpsOn) {
+  const tone = chirpsOn ? "pose-chirp" : "ui-tick";
+  if (kind === "banked") return { haptic: "tick", tone, pulse: true };
+  return { haptic: "milestone", tone, pulse: true };
+}
+
+// Pruning helpers (port of prune.ts): drop frames from the flat
+// kept list by index, returning the kept indices and the dropped
+// frames' records in the PRE-prune numbering the review showed.
+function applyPruningWeb(metas, drop) {
+  const keptIdx = [], pruned = [];
+  metas.forEach((m, i) => {
+    if (drop.has(i)) pruned.push({ frame: i, pass: m.pass, sharpness: m.sharpness });
+    else keptIdx.push(i);
+  });
+  return { keptIdx, pruned };
+}
+// Remap a session record's pose chirps onto post-prune frame
+// numbering: chirps whose frame was dropped are un-paired and
+// counted, never left pointing at a stale frame (the same
+// discipline WebChirpSession.remapPoseChirps applies at
+// thinning time, here over the plain record at prune time).
+function remapPoseChirpRecordsWeb(poseChirps, oldToNew) {
+  let dropped = 0;
+  const records = [];
+  for (const c of poseChirps) {
+    const n = oldToNew.get(c.frame_index);
+    if (n == null) { dropped++; continue; }
+    records.push(Object.assign({}, c, { frame_index: n }));
+  }
+  return { records, dropped };
 }
 
 // The initiation record (native manifest shape): the tap IS the
@@ -787,9 +920,9 @@ function buildManifestV3(info) {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3.2 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.3 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.2", build: 5, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.3", build: 6, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 tap-initiation blocks (native manifest placement: they
@@ -815,6 +948,15 @@ function buildManifestV3(info) {
       gate_dropped: info.gateDropped,
       attempts_pacing_skipped: info.pacingSkipped || 0,
       selection_dropped: info.selectionDropped,
+      // v3.3 pre-send pruning (native v1.4.0 capture block shape):
+      // present ONLY when the user actually left frames out at
+      // the review — an unpruned scan's manifest keeps the exact
+      // v3.2 shape (harness-pinned).
+      ...(info.userPruned ? {
+        user_pruned: info.userPruned.count,
+        user_pruned_frames: info.userPruned.frames,
+        user_pruned_pose_chirps: info.userPruned.poseChirpsDropped
+      } : {}),
       target_frames: info.targetFrames,
       cap_frames: info.capFrames,
       frame_max_px: info.frameMaxPx != null ? info.frameMaxPx : 1600,
@@ -1272,6 +1414,10 @@ let scanGen = 0, loopGen = 0,
     coverageTracker = null, pacingSkipped = 0,
     tapBusy = false, lockAttempts = 0,
     secondPassKind = null, choiceShown = false, finalizeStarted = false;
+// v3.3 pre-send pruning state: everything finalizeCapture computed,
+// held while the user reviews the frames; the manifest + bundle
+// are built only when the review is confirmed.
+let packCtx = null, reviewExcluded = new Set(), reviewUrls = [];
 const gateCanvas = document.createElement("canvas");
 const gctx = gateCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -1396,6 +1542,58 @@ function setPrompt() {
   }
   renderScaleUi();
   updateGuidance();
+  renderCoverageSegments();
+  renderProblemLine();
+  const aimDot = $("aim-dot");
+  if (aimDot) aimDot.classList.toggle("hidden", !(scanPhase === "walk" || scanPhase === "walk2"));
+}
+
+// v3.3: the coverage segment display (Qlone's clearable form,
+// bound to the real ledger — see coverageDisplayWeb). Shown
+// while walking; the choice screen keeps it visible so the
+// completeness the card talks about is on screen.
+function renderCoverageSegments() {
+  const el = $("coverage-segments");
+  if (!el) return;
+  const showIt = coverageTracker &&
+    (scanPhase === "walk" || scanPhase === "walk2" || scanPhase === "choice");
+  if (!showIt) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  const d = coverageDisplayWeb(coverageTracker.snapshot());
+  el.innerHTML = "";
+  d.parts.forEach(p => {
+    const row = document.createElement("div");
+    row.className = "cov-row";
+    const lab = document.createElement("span");
+    lab.className = "cov-label"; lab.textContent = p.label;
+    const segs = document.createElement("span");
+    segs.className = "cov-segs";
+    p.segments.forEach(s => {
+      const i = document.createElement("i");
+      i.className = "cov-seg " + s;
+      segs.appendChild(i);
+    });
+    const word = document.createElement("span");
+    word.className = "cov-word"; word.textContent = p.word;
+    row.appendChild(lab); row.appendChild(segs); row.appendChild(word);
+    el.appendChild(row);
+  });
+  el.classList.remove("hidden");
+}
+
+// v3.3: the named-problem line (Apple's vocabulary over our
+// gate's words). A problem is NAMED only when it recurs in the
+// recent-failure window (native dominantProblem, min 2) — one
+// stray soft frame never raises a state. Name + the gate's own
+// coaching + what the app does while it lasts.
+function renderProblemLine() {
+  const el = $("problem-line");
+  if (!el) return;
+  const walking = scanPhase === "walk" || scanPhase === "walk2";
+  const prob = walking ? dominantProblemWeb(recentFailures) : null;
+  if (!prob) { el.classList.add("hidden"); el.textContent = ""; return; }
+  const advice = COACHING[prob.id] || "";
+  el.textContent = prob.name + (advice ? " — " + advice : "") + " " + prob.behaviour;
+  el.classList.remove("hidden");
 }
 
 function encodeCanvas(canvas) {
@@ -1420,6 +1618,59 @@ function encodeBundleFrame(src) {
   bundleCanvas.getContext("2d").drawImage(src, 0, 0, bw, bh);
   return new Promise(res => bundleCanvas.toBlob(res, "image/jpeg", FRAME_JPEG_QUALITY_CAPPED))
     .then(blob => ({ blob, width: bw, height: bh }));
+}
+
+// ---------- v3.3 banked-frame feedback effects ----------
+// The effect sink for planBankedFeedbackWeb's decisions. Every
+// call is guarded — a failed buzz or tick can never fail a
+// capture (native feedbackEffects discipline). PLATFORM TRUTH:
+// iOS Safari exposes no Vibration API, so on Alan's iPhone the
+// haptic half is a no-op BY PLATFORM, not by omission — the gold
+// pulse and (chirps off) the tick still land. navigator.vibrate
+// fires where it exists (Android Chrome).
+let tickCtx = null;
+function playUiTick(milestone) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    // Prefer the session's own context (already running, already
+    // the user's gesture chain); fall back to a lazily-made one.
+    let ctx = (audioSession && audioSession.ctx && audioSession.ctx.state === "running")
+      ? audioSession.ctx : null;
+    if (!ctx) {
+      if (!tickCtx) tickCtx = new AC();
+      ctx = tickCtx;
+      if (ctx.state === "suspended") { void ctx.resume().catch(() => {}); }
+      if (ctx.state !== "running") return;
+    }
+    const t0 = ctx.currentTime + 0.01;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = milestone ? 1320 : 1760;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(milestone ? 0.12 : 0.07, t0 + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + (milestone ? 0.14 : 0.08));
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0 + (milestone ? 0.16 : 0.1));
+  } catch (e) { /* feedback must never fail a capture */ }
+}
+function fireBankedFeedback(kind) {
+  const plan = planBankedFeedbackWeb(kind, scanSoundMode === "chirp");
+  if (plan.pulse) {
+    const dot = $("aim-dot");
+    if (dot) {
+      dot.classList.remove("pulse");
+      void dot.offsetWidth; // restart the animation on rapid banks
+      dot.classList.add("pulse");
+    }
+  }
+  if (plan.haptic !== "none" && navigator.vibrate) {
+    try { navigator.vibrate(plan.haptic === "milestone" ? [25, 40, 25] : 15); } catch (e) { /* guarded */ }
+  }
+  if (plan.tone === "ui-tick") playUiTick(kind !== "banked");
+  // plan.tone === 'pose-chirp': the frame's own chirp already
+  // sounded for this exact moment — no second sound, ever.
 }
 
 // One gate attempt: draw the live frame once, score THOSE pixels
@@ -1447,10 +1698,13 @@ async function captureAttempt() {
     recentResults.push(res.passed); if (recentResults.length > 5) recentResults.shift();
     if (!res.passed) {
       gateDropped++;
-      // v3.2: the intake ledger accounts for gate failures too
-      // (native traceOutside) — primary walk only; the second
-      // pass keeps its own accounting in second_passes/passStats.
-      if (coverageTracker && passIndex < 2) coverageTracker.traceOutside("gate-failed");
+      // v3.2: the intake ledger accounts for gate failures too —
+      // primary walk only; the second pass keeps its own
+      // accounting in second_passes/passStats. v3.3: the trace
+      // carries the failure NAMES (native traceGateFailure) —
+      // nothing is dropped silently, every refusal has its
+      // reason on the record.
+      if (coverageTracker && passIndex < 2) coverageTracker.traceGateFailure(res.failures);
       recentFailures.push(res.failures); if (recentFailures.length > 5) recentFailures.shift();
       setPrompt();
       return;
@@ -1493,7 +1747,20 @@ async function captureAttempt() {
     }
     keptThisPass++;
     // v3.2: bank the view into the coverage model (guided sectors).
-    if (coverageTracker && passIndex < 2) coverageTracker.offer(passIndex);
+    // v3.3: a banked view is CONFIRMED — gold pulse on the aim
+    // dot, a haptic where the platform has one, and the tone the
+    // plan rules (the pose chirp itself when chirps are on; a
+    // soft tick when they're off). Milestones (a part completing,
+    // coverage completing) get the stronger form.
+    if (coverageTracker && passIndex < 2) {
+      const entry = coverageTracker.offer(passIndex);
+      let kind = "banked";
+      if (entry && entry.outcome === "banked" && entry.part) {
+        if (coverageTracker.isComplete()) kind = "coverage-complete";
+        else if (coverageTracker.banked[entry.part] >= VIEWS_PER_PART) kind = "part-complete";
+      }
+      fireBankedFeedback(kind);
+    }
     setPrompt();
     const pTarget = passIndex === 2 ? SECOND_PASS_TARGET : PASS_TARGET;
     const pCap = passIndex === 2 ? SECOND_PASS_CAP : PASS_CAP;
@@ -1578,6 +1845,7 @@ async function startScan() {
   coverageTracker = new CoverageTracker();
   pacingSkipped = 0; tapBusy = false; lockAttempts = 0;
   secondPassKind = null; choiceShown = false; finalizeStarted = false;
+  packCtx = null; reviewExcluded = new Set(); reviewUrls = [];
   denomId = "quarter-us";
   document.querySelectorAll("#denom-seg .seg-btn").forEach(x =>
     x.classList.toggle("active", x.dataset.denom === denomId));
@@ -2049,22 +2317,135 @@ async function finalizeCapture() {
     ledger = buildEvidenceLedgerWeb(null, frameMeta, v13);
   }
 
-  captureMeta = buildManifestV3({
-    code: currentCode, methodId: scanMethodId, device: browserDeviceBlock(),
-    soundMode: scanSoundMode, label: currentLabel(),
-    frames: frameMeta,
-    stream: streamInfo, locks: lockInfo, passes: passStats,
-    attempts, gateDropped, pacingSkipped, selectionDropped,
-    targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
-    startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
-    audio: audioRecord, audioSession: audioSessionRecord, ledger,
-    initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr
-  });
+  // v3.3: the manifest + bundle are NOT built yet. The scan goes
+  // to the pre-send review first (KIRI's pattern, native U6):
+  // the user sees every photo that would ship and can leave the
+  // bad ones out; applyPruneAndPack builds the manifest (with
+  // the pruning recorded, or the exact v3.2 shape when nothing
+  // was left out) and packs. The evidence ledger is likewise
+  // built at pack time, over the FINAL frame list.
+  packCtx = {
+    v13,
+    audioSessionRecord,
+    buildArgs: {
+      code: currentCode, methodId: scanMethodId, device: browserDeviceBlock(),
+      soundMode: scanSoundMode, label: currentLabel(),
+      stream: streamInfo, locks: lockInfo, passes: passStats,
+      attempts, gateDropped, pacingSkipped, selectionDropped,
+      targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
+      startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
+      audio: audioRecord,
+      initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr
+    }
+  };
   // camera tracks stop here (the session's mic track rides the same
   // stream); endCamera would also tear down the session, which is
   // already closed — stop the tracks directly.
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   $("cam").srcObject = null;
+  showReview();
+}
+
+// ---------- v3.3 pre-send review + pruning (KIRI's pattern) ----------
+// Every kept frame as a thumbnail with its number, pass and
+// sharpness; tap to leave a frame out of the bundle. The capture
+// record is never rewritten by the review — pruning is a shipment
+// decision, recorded in the manifest's capture.user_pruned fields
+// (native v1.4.0 shape) and nowhere when nothing was left out.
+const REVIEW_PASS_WORDS = { 1: "Pass 1 · level", 2: "Pass 2 · higher", 3: "Second pass" };
+function showReview() {
+  reviewExcluded = new Set();
+  reviewUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) { /* already gone */ } });
+  reviewUrls = [];
+  const grid = $("review-grid");
+  grid.innerHTML = "";
+  kept.forEach((blob, i) => {
+    const m = frameMeta[i];
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "review-item";
+    const url = URL.createObjectURL(blob);
+    reviewUrls.push(url);
+    const img = document.createElement("img");
+    img.src = url; img.alt = "Photo " + (i + 1);
+    const cap = document.createElement("span");
+    cap.className = "review-cap";
+    cap.textContent = "Photo " + (i + 1) + " · " + (REVIEW_PASS_WORDS[m.pass] || ("Pass " + m.pass)) +
+      " · sharpness " + Math.round(m.sharpness);
+    const badge = document.createElement("span");
+    badge.className = "review-badge hidden";
+    badge.textContent = "Left out";
+    item.appendChild(img); item.appendChild(cap); item.appendChild(badge);
+    item.onclick = () => {
+      if (reviewExcluded.has(i)) reviewExcluded.delete(i); else reviewExcluded.add(i);
+      item.classList.toggle("excluded", reviewExcluded.has(i));
+      badge.classList.toggle("hidden", !reviewExcluded.has(i));
+      updateReviewLine();
+    };
+    grid.appendChild(item);
+  });
+  updateReviewLine();
+  show("review");
+}
+function updateReviewLine() {
+  const total = kept.length;
+  const send = total - reviewExcluded.size;
+  $("review-count").textContent = send === total
+    ? "All " + total + " photos will be sent."
+    : send + " of " + total + " photos will be sent — " + reviewExcluded.size + " left out.";
+  const warn = $("review-warn");
+  if (send === 0) {
+    warn.textContent = "An empty scan can't pack — put at least one photo back in.";
+    warn.classList.remove("hidden");
+  } else if (send < DONE_MIN) {
+    warn.textContent = "Fewer than " + DONE_MIN + " photos — measuring gets harder with so few. It will still pack.";
+    warn.classList.remove("hidden");
+  } else {
+    warn.classList.add("hidden");
+    warn.textContent = "";
+  }
+  $("btn-pack").disabled = send === 0;
+  $("btn-pack").textContent = send === total ? "Pack the scan" : "Pack the scan — " + send + " photos";
+}
+// Confirm the review: apply the pruning (frames renumber, the
+// dropped frames' pose chirps un-pair and count, the act is
+// recorded), then build the manifest over the final frame list
+// and pack — the v3.2 path from here, unchanged.
+function applyPruneAndPack() {
+  if (!packCtx) return;
+  let userPruned = null;
+  let audioSessionRecord = packCtx.audioSessionRecord;
+  if (reviewExcluded.size > 0) {
+    const { keptIdx, pruned } = applyPruningWeb(frameMeta, reviewExcluded);
+    const oldToNew = new Map();
+    keptIdx.forEach((old, n) => oldToNew.set(old, n));
+    let poseChirpsDropped = 0;
+    if (audioSessionRecord && audioSessionRecord.pose_chirps) {
+      const remapped = remapPoseChirpRecordsWeb(audioSessionRecord.pose_chirps, oldToNew);
+      poseChirpsDropped = remapped.dropped;
+      audioSessionRecord = Object.assign({}, audioSessionRecord, {
+        pose_chirps: remapped.records,
+        aperture: audioSessionRecord.aperture ? Object.assign({}, audioSessionRecord.aperture, {
+          pose_chirps_emitted: remapped.records.filter(c => c.status === "emitted").length,
+          pose_chirps_failed: remapped.records.filter(c => c.status === "failed").length,
+          selection_dropped_chirps: (audioSessionRecord.aperture.selection_dropped_chirps || 0) + remapped.dropped
+        }) : audioSessionRecord.aperture
+      });
+    }
+    kept = keptIdx.map(i => kept[i]);
+    frameMeta = keptIdx.map((old, n) => Object.assign({}, frameMeta[old], { frame: n }));
+    userPruned = { count: pruned.length, frames: pruned, poseChirpsDropped };
+  }
+  const ledger = buildEvidenceLedgerWeb(audioSessionRecord, frameMeta, packCtx.v13);
+  captureMeta = buildManifestV3(Object.assign({}, packCtx.buildArgs, {
+    frames: frameMeta,
+    audioSession: audioSessionRecord,
+    ledger,
+    userPruned
+  }));
+  packCtx = null;
+  reviewUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) { /* already gone */ } });
+  reviewUrls = [];
   buildBundle();
 }
 $("btn-start").onclick = startScan;
@@ -2085,6 +2466,7 @@ document.querySelectorAll("#denom-seg .seg-btn").forEach(b => {
 });
 $("btn-skip-scale").onclick = skipScale;
 $("btn-skip-locking").onclick = skipLocking;
+$("btn-pack").onclick = applyPruneAndPack;
 $("btn-flip").onclick = () => beginSecondPass("flip");
 $("btn-bottom").onclick = () => beginSecondPass("bottom");
 $("btn-nobottom").onclick = () => { void finishCapture(); };
@@ -2321,7 +2703,7 @@ async function buildBundle() {
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.2 (web capture)" };
+                 made_with: "Scan the World test app v3.3 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });

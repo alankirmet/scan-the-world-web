@@ -30,8 +30,9 @@
       <li>Then put the object in the middle of the mat and tap Start.</li>
       <li><strong>Tap the object</strong> on the screen — that tap starts the scan and marks what you're scanning.</li>
       <li>If there's a coin next to it, <strong>tap the coin</strong> too and pick its denomination. Keep adjusting until the size locks. No coin? Skip it — the scan is shape-only and says so.</li>
-      <li>Walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; the line under the camera tells you which side it still needs.</li>
+      <li>Walk slowly around it <strong>twice</strong> — first pass level with it, second pass a little higher. The app takes the photos by itself and chirps softly for each photo it keeps; the five lines under the camera fill in side by side as each side gets banked, and if the light or your pace fights the camera it will say what's wrong in plain words.</li>
       <li>At the end you can <strong>flip the object</strong> (or tilt it onto its side) and scan the bottom too — or just finish.</li>
+      <li>Before anything packs, you <strong>check the photos</strong>: every photo that would be sent is shown with its sharpness — tap any bad ones to leave them out.</li>
       <li>Use good light. Keep the object still. Quiet room — no TV or talking while you scan.</li>
     </ol>
     <p class="muted">I'm scanning on:</p>
@@ -65,7 +66,7 @@
     </div>
   </div>
 
-  <p class="foot">Test app v3.2 — browser capture with sound (photos + chirps in one file), tap-to-start scanning and the size lock. The measuring tech underneath is the real thing; the game comes later.</p>
+  <p class="foot">Test app v3.3 — browser capture with sound (photos + chirps in one file), tap-to-start scanning and the size lock, side-by-side coverage segments, plain-words problem coaching, and a photo check before packing. The measuring tech underneath is the real thing; the game comes later.</p>
 </section>
 
 <!-- CAPTURE -->
@@ -77,12 +78,15 @@
   </div>
   <div class="camera-wrap">
     <video id="cam" autoplay playsinline muted></video>
+    <div id="aim-dot" class="hidden"><span class="aim-ring"></span><span class="aim-centre"></span></div>
     <div id="prompt">Starting the camera…</div>
     <div id="tap-layer" class="hidden"><div id="tap-dot" class="hidden"></div></div>
   </div>
   <div class="progress-track"><div id="progress-fill"></div></div>
+  <div id="coverage-segments" class="hidden"></div>
   <p id="guidance-line" class="guidance center hidden"></p>
   <p id="quality-line" class="center"><span id="quality-dot">●</span> <span id="quality-word">Getting ready…</span></p>
+  <p id="problem-line" class="center hidden"></p>
   <p id="audio-line" class="center muted">Sound: starting…</p>
   <p id="sharp-value" class="center">Sharpness: —</p>
   <div class="progress-track sharp-track"><div id="sharp-meter"></div></div>
@@ -109,6 +113,20 @@
     <button id="btn-nobottom" class="text-button wide">No — finish the scan</button>
   </div>
   <button id="btn-done" class="primary" disabled>Done</button>
+</section>
+
+<!-- REVIEW (v3.3: pre-send photo check) -->
+<section id="screen-review" class="screen hidden">
+  <header>
+    <h1>Check your photos</h1>
+    <p class="sub">These are the photos that will be sent. Tap any bad ones — blurry, off the object, a thumb — to leave them out. Left-out photos are not sent.</p>
+  </header>
+  <div class="card">
+    <p id="review-count">…</p>
+    <p id="review-warn" class="hidden"></p>
+  </div>
+  <div id="review-grid"></div>
+  <button id="btn-pack" class="primary">Pack the scan</button>
 </section>
 
 <!-- SEND -->
