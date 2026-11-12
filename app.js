@@ -445,46 +445,100 @@ function regionMayFeedDimension(prov, region) {
 // mode is never dressed up as measured pose.
 const COVERAGE_PARTS = ["front", "right", "back", "left", "top"];
 const VIEWS_PER_PART = 3;
-const GUIDANCE_WORDS = {
-  front: "Start at the front — keep it filling half the screen.",
-  right: "Now from the right side.",
-  back: "Now the back.",
-  left: "Now from the left side.",
-  top: "Now a little higher — let's get the top."
+// Coverage plans (v3.7 — port of native v1.4.4 coverage.ts, the
+// app-integration round: the web manifest carried NO shape
+// declaration, so the serving pipeline's round construction
+// never fired for web bundles). The part list is a PLAN chosen
+// by the object's shape at setup; the snapshot carries
+// coverage_plan — the field build_trophy reads as the shape
+// declaration (native manifest shape, field for field).
+const COVERAGE_PLANS_WEB = {
+  sides: {
+    id: "sides", elevatedPart: "top",
+    completeLine: "That's the whole object from up here — the model says complete.",
+    parts: [
+      { id: "front", label: "Front", viewsNeeded: 3, guidanceLine: "Start at the front — keep it filling half the screen." },
+      { id: "right", label: "Right", viewsNeeded: 3, guidanceLine: "Now from the right side." },
+      { id: "back", label: "Back", viewsNeeded: 3, guidanceLine: "Now the back." },
+      { id: "left", label: "Left", viewsNeeded: 3, guidanceLine: "Now from the left side." },
+      { id: "top", label: "Top", viewsNeeded: 3, guidanceLine: "Now a little higher — let's get the top." }
+    ]
+  },
+  round: {
+    id: "round", elevatedPart: "top",
+    completeLine: "That's the whole object from up here — the model says complete.",
+    parts: [
+      { id: "around-level", label: "Around — level", viewsNeeded: 6, guidanceLine: "Keep walking slowly around it — stay level with it." },
+      { id: "around-high", label: "Around — higher", viewsNeeded: 6, guidanceLine: "Now a higher ring — look down at it a little." },
+      { id: "top", label: "Top", viewsNeeded: 3, guidanceLine: "Now from above — let's get the top." }
+    ]
+  },
+  lying: {
+    id: "lying", elevatedPart: null,
+    completeLine: "Top, sides and ends done — the underside is still hidden underneath. Flip it over for the Flip pass, or finish and it will be filled in and labelled as filled.",
+    parts: [
+      { id: "along-top", label: "Top side", viewsNeeded: 4, guidanceLine: "Walk slowly along the top side." },
+      { id: "other-side", label: "Other side", viewsNeeded: 4, guidanceLine: "Walk to the other long side — or roll it a quarter turn." },
+      { id: "ends", label: "Ends", viewsNeeded: 4, guidanceLine: "Now the ends — one end, then the other." }
+    ]
+  }
 };
+function coveragePlanForWeb(id) {
+  return COVERAGE_PLANS_WEB[id] || COVERAGE_PLANS_WEB.sides;
+}
+// The setup screen's shape question — native's own words.
+const SHAPE_CHOICES_WEB = [
+  { id: "sides", label: "All sides different" },
+  { id: "round", label: "Round — same all the way around" },
+  { id: "lying", label: "Lying down / long" }
+];
 class CoverageTracker {
-  constructor() {
-    this.banked = { top: 0, front: 0, right: 0, back: 0, left: 0 };
+  // v3.7: plan-aware (port of native v1.4.4's tracker rules).
+  // The default plan is 'sides' — the pre-v3.7 behaviour,
+  // harness-pinned. Banking follows native's GUIDED rule: a
+  // view banks into the part guidance is currently steering
+  // toward (the first incomplete part in plan order); the
+  // higher pass reaches the 'top' part through that same
+  // progression once the ring parts complete (the web's two
+  // orbit heights walk the plan's parts in order). A view for
+  // a complete part is discarded 'no-new-coverage' — the kept
+  // photo still ships in the bundle; the ledger records that
+  // it added no new coverage.
+  constructor(planId) {
+    this.plan = coveragePlanForWeb(planId);
+    this.banked = {};
+    for (const p of this.plan.parts) this.banked[p.id] = 0;
     this.intake = [];
     this.counter = 0;
     this.frozen = false; // no pose source exists to lose; kept for shape parity
   }
+  planId() { return this.plan.id; }
+  needed(p) {
+    const def = this.plan.parts.find(x => x.id === p);
+    return def ? def.viewsNeeded : VIEWS_PER_PART;
+  }
   currentPart() {
-    for (const p of ["front", "right", "back", "left"]) {
-      if (this.banked[p] < VIEWS_PER_PART) return p;
+    for (const p of this.plan.parts) {
+      if (this.banked[p.id] < p.viewsNeeded) return p.id;
     }
-    return "top";
+    return this.plan.parts[this.plan.parts.length - 1].id;
   }
   partState(p) {
-    if (this.banked[p] >= VIEWS_PER_PART) return "complete";
+    if (this.banked[p] >= this.needed(p)) return "complete";
     return this.banked[p] > 0 ? "partial" : "missing";
   }
   isComplete() {
-    return COVERAGE_PARTS.every(p => this.banked[p] >= VIEWS_PER_PART);
+    return this.plan.parts.every(p => this.banked[p.id] >= p.viewsNeeded);
   }
   guidance() {
-    if (this.isComplete()) return "That's the whole object from up here — the model says complete.";
-    return GUIDANCE_WORDS[this.currentPart()];
+    if (this.isComplete()) return this.plan.completeLine;
+    const def = this.plan.parts.find(p => p.id === this.currentPart());
+    return def ? def.guidanceLine : this.plan.completeLine;
   }
-  // Offer one gated-kept view. passIndex 0 (level pass) banks into
-  // the sector currently being guided; passIndex >= 1 (the higher
-  // pass) banks to 'top'. A view for a complete part is discarded
-  // 'no-new-coverage' — the kept photo still ships in the bundle;
-  // the ledger records that it added no new coverage.
   offer(passIndex) {
     this.counter++;
-    const part = passIndex >= 1 ? "top" : this.currentPart();
-    if (this.banked[part] >= VIEWS_PER_PART) {
+    const part = this.currentPart();
+    if (this.banked[part] >= this.needed(part)) {
       return this.trace("discarded", "no-new-coverage", part);
     }
     this.banked[part]++;
@@ -520,8 +574,8 @@ class CoverageTracker {
   intakeEntries() { return this.intake.slice(); }
   snapshot() {
     const parts = {};
-    for (const p of COVERAGE_PARTS) {
-      parts[p] = { banked: this.banked[p], needed: VIEWS_PER_PART, state: this.partState(p) };
+    for (const p of this.plan.parts) {
+      parts[p.id] = { banked: this.banked[p.id], needed: p.viewsNeeded, state: this.partState(p.id) };
     }
     return {
       pose_source: "guided-sectors-no-device-pose",
@@ -529,7 +583,15 @@ class CoverageTracker {
       declared_complete: this.isComplete(),
       frozen: this.frozen,
       banked_total: this.intake.filter(e => e.outcome === "banked").length,
-      discarded_total: this.intake.filter(e => e.outcome === "discarded").length
+      discarded_total: this.intake.filter(e => e.outcome === "discarded").length,
+      // v3.7 (native v1.4.4 field): THE SHAPE DECLARATION — the
+      // serving pipeline reads coverage.coverage_plan as the
+      // bundle's declared shape. The web has no skip UI, so the
+      // skip fields ride at their honest empty values.
+      coverage_plan: this.plan.id,
+      skipped: [],
+      complete_with_skips: false,
+      completion_note: null
     };
   }
 }
@@ -546,10 +608,17 @@ class CoverageTracker {
 // is 'banked' only when the ledger counted a banked view into
 // that slot. No segment fills for time, attempts, or pacing.
 function coverageDisplayWeb(snap) {
-  const order = ["front", "right", "back", "left", "top"];
-  const labels = { front: "Front", right: "Right", back: "Back", left: "Left", top: "Top" };
-  let currentPart = "top";
-  for (const p of ["front", "right", "back", "left"]) {
+  // v3.7: plan-aware — the parts and their order come from the
+  // snapshot itself (the plan's order), labels from the plan
+  // table (sides labels unchanged for the pre-v3.7 snapshots,
+  // which carry the sides parts in the same order).
+  const order = Object.keys(snap.parts);
+  const labels = {};
+  for (const plan of Object.values(COVERAGE_PLANS_WEB)) {
+    for (const p of plan.parts) labels[p.id] = p.label;
+  }
+  let currentPart = order[order.length - 1];
+  for (const p of order) {
     if (snap.parts[p].banked < snap.parts[p].needed) { currentPart = p; break; }
   }
   const parts = order.map(part => {
@@ -968,7 +1037,7 @@ function buildManifestV3(info) {
     n_frames: info.frames.length,
     made_with: "Scan the World test app v3.5 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.6", build: 9, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.7", build: 10, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 initiation blocks (native manifest placement: they
@@ -1416,6 +1485,28 @@ function renderMethodSeg() {
       scanMethodId = b.dataset.method;
       try { localStorage.setItem("stw-method-v3", scanMethodId); } catch (e) { /* ignore */ }
       renderMethodSeg();
+    };
+  });
+}
+
+// The shape choice (v3.7 — native v1.4.4's setup question, the
+// app-integration round): which coverage plan the walk follows
+// and — the point of the exercise — the shape the bundle
+// DECLARES in coverage.coverage_plan for the serving pipeline.
+// Persisted like the method; default 'sides' (the pre-v3.7
+// behaviour for anyone who never touches it).
+let scanShapeId = "sides";
+try {
+  const savedShape = localStorage.getItem("stw-shape-v1");
+  if (savedShape && COVERAGE_PLANS_WEB[savedShape]) scanShapeId = savedShape;
+} catch (e) { /* private mode etc. — default stands */ }
+function renderShapeSeg() {
+  document.querySelectorAll("#shape-seg .seg-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.shape === scanShapeId);
+    b.onclick = () => {
+      scanShapeId = b.dataset.shape;
+      try { localStorage.setItem("stw-shape-v1", scanShapeId); } catch (e) { /* ignore */ }
+      renderShapeSeg();
     };
   });
 }
@@ -1965,6 +2056,11 @@ async function captureAttempt() {
     kept.push(blob);
     frameMeta.push({
       frame: kept.length - 1, pass: passIndex + 1,
+      // v3.7 (native v1.5 field): the pass KIND — passIndex 2 is
+      // the second pass, whose kind (flip / bottom) the flow
+      // chose; the serving pipeline's edge-fit fits orbit passes
+      // only and reads this instead of guessing from numbers.
+      pass_kind: passIndex >= 2 ? (secondPassKind || "flip") : "primary",
       file: null,
       sharpness: Math.round(res.sharpness * 10) / 10,
       exposure_mean: Math.round(res.exposureMean * 10) / 10,
@@ -2003,7 +2099,7 @@ async function captureAttempt() {
       let kind = "banked";
       if (entry && entry.outcome === "banked" && entry.part) {
         if (coverageTracker.isComplete()) kind = "coverage-complete";
-        else if (coverageTracker.banked[entry.part] >= VIEWS_PER_PART) kind = "part-complete";
+        else if (coverageTracker.banked[entry.part] >= coverageTracker.needed(entry.part)) kind = "part-complete";
       }
       fireBankedFeedback(kind);
     }
@@ -2090,7 +2186,7 @@ async function startScan() {
   scanGen++;
   initiationData = null; scaleMachine = null; scalePointNorm = null;
   initiationBlob = null; scaleBlob = null;
-  coverageTracker = new CoverageTracker();
+  coverageTracker = new CoverageTracker(scanShapeId);
   pacingSkipped = 0; tapBusy = false; lockAttempts = 0;
   aimLanded = false; aimNote = null; pendingInitiation = null;
   aimChainSeq++; undersideAnnounced = false;
@@ -3169,7 +3265,7 @@ async function buildBundle() {
   if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.5 (web capture)" };
+                 made_with: "Scan the World test app v3.7 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });
@@ -3419,6 +3515,7 @@ $("btn-back").onclick = () => { renderScanList(); show("home"); };
 renderScanList();
 renderMethodSeg();
 renderSoundSeg();
+renderShapeSeg();
 initLabelField();
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
