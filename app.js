@@ -1534,9 +1534,17 @@ function renderSoundSeg() {
   });
 }
 
-// The scan label (optional; pre-filled with the previous scan's
-// label so pairing an A/B set is one tap). Read at Start, carried
-// into the manifest verbatim.
+// The scan label (optional). It is THIS scan's name and nothing
+// else's: never persisted, never pre-filled. The field starts
+// blank; at Start the typed text is captured into scanLabel
+// (scan state) and the field is cleared; the manifest carries
+// scanLabel verbatim. (Label fix, 2026-11-14: pre-fix the
+// previous scan's label was kept in localStorage under
+// stw-label-v3 and pre-filled "so pairing an A/B set is one
+// tap" — the native build copied the behaviour and two bundles
+// in a row were born labelled "Hot sauce" by it, 2026-11-13.
+// The key is now only deleted on sight, purging the stale value
+// a pre-fix page left behind.)
 function currentLabel() {
   const el = $("label-input");
   return el ? el.value.trim() : "";
@@ -1544,10 +1552,8 @@ function currentLabel() {
 function initLabelField() {
   const el = $("label-input");
   if (!el) return;
-  try { el.value = localStorage.getItem("stw-label-v3") || ""; } catch (e) { /* ignore */ }
-}
-function persistLabel() {
-  try { localStorage.setItem("stw-label-v3", currentLabel()); } catch (e) { /* ignore */ }
+  el.value = "";
+  try { localStorage.removeItem("stw-label-v3"); } catch (e) { /* ignore */ }
 }
 
 
@@ -1608,7 +1614,7 @@ let audioSession = null, audioUnavailableReason = null,
 // chain's recorded aim-point initiation that Start scan
 // promotes, and aimChainSeq retires a superseded still chain.
 // undersideAnnounced latches the flip-visibility announcement.
-let scanGen = 0, loopGen = 0,
+let scanGen = 0, loopGen = 0, scanLabel = "",
     initiationData = null, scaleMachine = null, denomId = "quarter-us",
     scalePointNorm = null, initiationBlob = null, scaleBlob = null,
     coverageTracker = null, pacingSkipped = 0,
@@ -2251,7 +2257,11 @@ async function startScan() {
     }
     // v3: the chirp session — playback context up, recorder
     // running, THEN the baseline phase, all before the first photo.
-    persistLabel();
+    // Label fix (2026-11-14): capture THIS scan's typed label
+    // into scan state and clear the field — never persisted,
+    // so the next scan's setup starts blank.
+    scanLabel = currentLabel();
+    { const el = $("label-input"); if (el) el.value = ""; }
     audioSession = new WebChirpSession();
     audioSession.soundMode = scanSoundMode;
     if (scanSoundMode !== "silent") await audioSession.prepare(stream);
@@ -2844,7 +2854,7 @@ async function finalizeCapture() {
     audioSessionRecord,
     buildArgs: {
       code: currentCode, methodId: scanMethodId, device: browserDeviceBlock(),
-      soundMode: scanSoundMode, label: currentLabel(),
+      soundMode: scanSoundMode, label: scanLabel,
       stream: streamInfo, locks: lockInfo, passes: passStats,
       attempts, gateDropped, pacingSkipped, selectionDropped,
       targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
