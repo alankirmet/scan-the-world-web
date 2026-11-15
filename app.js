@@ -683,15 +683,16 @@ function dominantProblemWeb(recentFailures, minCount) {
 }
 
 // Banked-frame feedback plan (port of bankedFeedback.ts): the
-// DECISION half only — the effect sink never guesses. Tone rule:
-// chirps ON ⇒ the frame's own pose chirp IS the tone ('pose-
-// chirp', never a second sound over the protocol); chirps OFF ⇒
-// a soft UI tick ('ui-tick'). Haptics: a plain bank is a tick, a
+// DECISION half only — the effect sink never guesses. The tone
+// is a soft UI tick ('ui-tick'). Pre-chirp-cut, the plan chose
+// between the frame's own pose chirp and the tick; with the
+// chirp cut (Alan's rulings 2026-11-13 + 2026-11-14) the tick
+// is simply the tone. Haptics: a plain bank is a tick, a
 // milestone (part / coverage complete) is the stronger buzz —
 // where the platform has no vibration (iOS Safari), the sink's
 // guarded call is a no-op and the gold pulse still shows.
-function planBankedFeedbackWeb(kind, chirpsOn) {
-  const tone = chirpsOn ? "pose-chirp" : "ui-tick";
+function planBankedFeedbackWeb(kind) {
+  const tone = "ui-tick";
   if (kind === "banked") return { haptic: "tick", tone, pulse: true };
   return { haptic: "milestone", tone, pulse: true };
 }
@@ -707,11 +708,11 @@ function applyPruningWeb(metas, drop) {
   });
   return { keptIdx, pruned };
 }
-// Remap a session record's pose chirps onto post-prune frame
-// numbering: chirps whose frame was dropped are un-paired and
-// counted, never left pointing at a stale frame (the same
-// discipline WebChirpSession.remapPoseChirps applies at
-// thinning time, here over the plain record at prune time).
+// HISTORY (chirp cut, Alan's rulings 2026-11-13 + 2026-11-14):
+// remap a session record's pose chirps onto post-prune frame
+// numbering. Nothing in the live flow calls this — capture
+// produces no session record anymore. Kept with the acoustic
+// record, like the AUDIO PURE BLOCK below.
 function remapPoseChirpRecordsWeb(poseChirps, oldToNew) {
   let dropped = 0;
   const records = [];
@@ -754,7 +755,14 @@ function buildInitiationRecord(p) {
 }
 // ==== END V32 PURE BLOCK ====
 
-// ---------- audio (v3, 2026-11-09) ----------
+// ---------- audio (v3, 2026-11-09) — HISTORY ----------
+// CHIRP CUT (Alan's rulings 2026-11-13 + 2026-11-14): sound is
+// removed from the capture flow. Everything from here through
+// the WebChirpSession class is kept as the research record of
+// the acoustic protocol; NOTHING in the live capture flow
+// constructs a session, emits a chirp, records, or declares
+// audio in a manifest. The v3 proof harness still extracts the
+// pure block to pin that the manifest builder emits no audio.
 // WEB CAPTURE v3: the browser build of the native app's chirp
 // session (app-native v1.1/v1.2). Same frozen emission spec
 // (audio-framework/BASELINE-PROTOCOL.md §7), same session shape:
@@ -878,108 +886,17 @@ async function wavRateFromBlob(blob) {
 }
 
 // The evidence ledger — a port of native buildEvidenceLedger
-// (manifest.ts) over a web session record. Estimator-side groups
-// stay null + flag, exactly as native: never dressed as values.
-// v3.2: the optional third argument carries the v1.3 initiation
-// records (scale lock, intake ledger, region provenance); absent
-// (a pre-v3.2 flow) the groups ride as null + 'no_v13_initiation',
-// the same flag native writes when a bundle has no initiation.
-function buildEvidenceLedgerWeb(session, frames, v13) {
-  const s = session || null;
-  const poseChirps = (s && s.pose_chirps) || [];
-  const noSessNum = () => ({ value: null, flag: s ? "not_computed_at_capture" : "no_audio_session" });
-  let dpq;
-  if (!s) dpq = { value: null, flag: "no_audio_session" };
-  else if (s.baseline_failure) {
-    dpq = { value: { outcome: "failed", reason: s.baseline_failure }, flag: "computed_on_device" };
-  } else {
-    const cal = s.session_calibration;
-    const degraded =
-      cal.session_flags.includes("route-not-built-in") ||
-      cal.session_flags.includes("browser-audio-processing-left-on") ||
-      cal.session_flags.includes("browser-audio-processing-state-unreported") ||
-      s.trains.some(t => t.status === "failed") ||
-      poseChirps.some(c => c.status === "failed");
-    dpq = {
-      value: {
-        outcome: degraded ? "degraded"
-          : cal.latency_lock === "not_evaluated_on_device" ? "not_evaluated_on_device" : "not_run",
-        reason: degraded ? "session completed with recorded degradations (see session_flags / failed emissions)" : null
-      },
-      flag: "computed_on_device"
-    };
-  }
-  const byFrame = new Map(frames.map(f => [f.frame, f]));
-  const timing = s ? {
-    value: {
-      pose_chirps: poseChirps.map(c => {
-        const f = byFrame.get(c.frame_index);
-        const frameOff = f ? f.audio_offset_ms : null;
-        return {
-          frame: c.frame_index,
-          chirp_audio_offset_ms: c.audio_offset_ms,
-          frame_audio_offset_ms: frameOff,
-          delta_ms: c.audio_offset_ms != null && frameOff != null
-            ? round3(c.audio_offset_ms - frameOff) : null
-        };
-      }),
-      trains: s.trains.map(t => ({ kind: t.kind, pass: t.pass, chirp_offsets_ms: t.chirp_offsets_ms }))
-    },
-    flag: "recorded"
-  } : { value: null, flag: "no_audio_session" };
-  const per = p => ({
-    frames: frames.filter(f => f.pass === p).length,
-    emitted: poseChirps.filter(c => c.pass === p && c.status === "emitted").length,
-    failed: poseChirps.filter(c => c.pass === p && c.status === "failed").length
-  });
-  const p1 = per(1), p2 = per(2);
-  const covOf = q => (q.frames > 0 ? q.emitted / q.frames : null);
-  const c1 = covOf(p1), c2 = covOf(p2);
-  const heightPair = s ? {
-    value: {
-      pass_1: { frames: p1.frames, chirps_emitted: p1.emitted, chirps_failed: p1.failed },
-      pass_2: { frames: p2.frames, chirps_emitted: p2.emitted, chirps_failed: p2.failed },
-      coverage_ratio: c1 != null && c2 != null && Math.max(c1, c2) > 0
-        ? Math.round((Math.min(c1, c2) / Math.max(c1, c2)) * 10000) / 10000 : null
-    },
-    flag: "computed_on_device"
-  } : { value: null, flag: "no_audio_session" };
-  const temp = s ? {
-    value: {
-      temp_c: s.session_calibration.temp_c,
-      source: s.session_calibration.temp_source,
-      c_assumed_m_per_s: s.session_calibration.c_assumed_m_per_s
-    },
-    flag: s.session_calibration.temp_source
-  } : { value: null, flag: "no_audio_session" };
-  let decision, reason;
-  if (s && s.session_calibration.session_flags.includes("latency-lock-failed")) {
-    decision = { value: "abstained", flag: "computed_on_device" };
-    reason = { value: "latency-lock-failed", flag: "overlay-contract-taxonomy" };
-  } else if (!s || poseChirps.length === 0) {
-    const hadTrains = !!s && s.trains.some(t => t.kind === "measurement" && t.status === "emitted");
-    if (s && hadTrains) {
-      decision = { value: "recorded", flag: "computed_on_device" };
-      reason = { value: null, flag: "recorded" };
-    } else {
-      decision = { value: "abstained", flag: "computed_on_device" };
-      reason = { value: "no-chirp-in-capture", flag: "overlay-contract-taxonomy" };
-    }
-  } else {
-    decision = { value: "recorded", flag: "computed_on_device" };
-    reason = { value: null, flag: "recorded" };
-  }
+// (manifest.ts). CHIRP CUT (Alan's rulings 2026-11-13 +
+// 2026-11-14): the pre-cut builder also summarised the audio
+// channel (direct-path quality, per-chirp timing, height-pair
+// consistency, temperature, the capture-time decision) from a
+// session record; those groups are gone with the sound. What
+// remains is the v1.3 substance, carried by the optional v13
+// argument (scale lock, intake ledger, region provenance);
+// absent (a flow with no initiation) the groups ride as null +
+// 'no_v13_initiation', the same flag native writes.
+function buildEvidenceLedgerWeb(v13) {
   return {
-    direct_path_quality: dpq,
-    timing_evidence: timing,
-    absolute_echo_support: noSessNum(),
-    relative_separation: noSessNum(),
-    spectral_consistency: noSessNum(),
-    baseline_change: noSessNum(),
-    height_pair_consistency: heightPair,
-    temperature_state: temp,
-    final_decision: decision,
-    diagnostic_reason: reason,
     scale_lock: v13 && v13.scaleLock
       ? { value: v13.scaleLock, flag: "recorded" }
       : { value: null, flag: "no_v13_initiation" },
@@ -1035,9 +952,9 @@ function buildManifestV3(info) {
     code: info.code,
     paper: "LETTER",
     n_frames: info.frames.length,
-    made_with: "Scan the World test app v3.5 (web capture — chirp-enabled browser pipeline)",
+    made_with: "Scan the World test app v3.5 (web capture — browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.7.1", build: 11, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.8.0", build: 12, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 initiation blocks (native manifest placement: they
@@ -1070,8 +987,7 @@ function buildManifestV3(info) {
       // v3.2 shape (harness-pinned).
       ...(info.userPruned ? {
         user_pruned: info.userPruned.count,
-        user_pruned_frames: info.userPruned.frames,
-        user_pruned_pose_chirps: info.userPruned.poseChirpsDropped
+        user_pruned_frames: info.userPruned.frames
       } : {}),
       target_frames: info.targetFrames,
       cap_frames: info.capFrames,
@@ -1083,32 +999,17 @@ function buildManifestV3(info) {
       started_at_epoch_ms: info.startedAtEpochMs,
       finished_at_epoch_ms: info.finishedAtEpochMs
     },
-    audio: info.audio,
-    audio_session: info.audioSession,
     evidence_ledger: info.ledger,
     sync: {
-      clock: "audio-context clock (the recorder's sample timeline) for chirp and frame offsets; device epoch ms recorded alongside",
-      audio_started_at_epoch_ms: info.audio ? info.audio.started_at_epoch_ms : null,
-      note: "Chirp offsets are computed on the recording AudioContext's clock from the recorder's start frame, and each frame's offset uses the same clock at grab time. The browser's input path adds one constant delay to the recorded track; the measuring side works that constant out from the opening sound-check tones themselves, so the pairing timestamps are a starting hint — the sound file itself is the truth."
+      clock: "device epoch milliseconds (Date.now) for every frame",
+      note: "Every frame carries its own device-epoch timestamp (captured_at_epoch_ms); frame timing needs no other track to align against."
     },
-    // v3.5 (sound-off truth, native parity — Alan's 2026-11-10
-    // ruling): chirps off means NO recording exists, and the
-    // manifest says so in the native words, 'off-by-design', so
-    // the runner grades the sound side ABSTAINED by design
-    // exactly as it does a native bundle. 'silent' is retired
-    // as a manifest value (the setup toggle's own word is now
-    // chirps on/off — see the home screen).
-    sound_mode: info.soundMode === "silent" ? "off-by-design" : "chirp",
     label: info.label || null,
     ground_truth: buildGroundTruthWeb(info),
     research_corpus_eligible: method.calibrated,
-    research_note: info.soundMode === "silent"
-      ? method.calibrated
-        ? "Web-capture scan (pipeline: browser-web) on a calibration method, but chirps were off: no sound was recorded at all, so there is no sound to pair with the calibrated reference as research data."
-        : "Web-capture scan (pipeline: browser-web), no calibration method. Chirps were off: no sound was recorded at all."
-      : method.calibrated
-        ? "Web-capture scan (pipeline: browser-web) on a calibration method. Its sound recording is paired with that calibrated reference as research data (acoustic estimator unproven — data first)."
-        : "Web-capture scan (pipeline: browser-web), no calibration method. Its audio is still included.",
+    research_note: method.calibrated
+      ? "Web-capture scan (pipeline: browser-web) on a calibration method. The calibrated reference accumulates as research data."
+      : "Web-capture scan (pipeline: browser-web), no calibration method.",
     frames_meta: info.frames
   };
 }
@@ -1120,6 +1021,9 @@ const sleepMs = ms => new Promise(r => setTimeout(r, ms));
 // The web chirp session — mirrors native ChirpSession's behaviour
 // and record shape (audioSession.ts), with browser-honest unknowns
 // recorded as nulls + flags instead of native library values.
+// HISTORY (chirp cut, Alan's rulings 2026-11-13 + 2026-11-14):
+// unreachable from the capture flow — startScan never constructs
+// one. Kept as the research record.
 class WebChirpSession {
   constructor() {
     this.ctx = null; this.fs = null;
@@ -1521,28 +1425,12 @@ function renderShapeSeg() {
   });
 }
 
-// Sound on/off (Alan's setup toggle): "chirp" = the full
-// protocol (baseline trains + per-pose chirps, sound recorded);
-// "silent" (the stored value's name is kept so an existing
-// preference still reads) = NO chirps and NO recording at all —
-// the microphone is never read (Alan's 2026-11-10 ruling, the
-// native sound_mode 'off-by-design'). The frame pipeline is
-// identical either way. Persisted, default On.
-let scanSoundMode = "chirp";
-try {
-  const savedSound = localStorage.getItem("stw-sound-v3");
-  if (savedSound === "chirp" || savedSound === "silent") scanSoundMode = savedSound;
-} catch (e) { /* default stands */ }
-function renderSoundSeg() {
-  document.querySelectorAll("#sound-seg .seg-btn").forEach(b => {
-    b.classList.toggle("active", b.dataset.sound === scanSoundMode);
-    b.onclick = () => {
-      scanSoundMode = b.dataset.sound;
-      try { localStorage.setItem("stw-sound-v3", scanSoundMode); } catch (e) { /* ignore */ }
-      renderSoundSeg();
-    };
-  });
-}
+// CHIRP CUT (Alan's rulings 2026-11-13 + 2026-11-14): the
+// sound on/off setup toggle is GONE — there is no sound to
+// toggle. Capture is photos only; the microphone is never
+// requested. The pre-cut preference key (stw-sound-v3) is
+// deleted on sight at boot, like the label key below, so a
+// stale value from a pre-cut page can never be picked up.
 
 // The scan label (optional). It is THIS scan's name and nothing
 // else's: never persisted, never pre-filled. The field starts
@@ -1612,10 +1500,10 @@ let stream = null, capturing = false, attemptBusy = false,
     passIndex = 0, keptThisPass = 0, attempts = 0, gateDropped = 0,
     passStats = [], recentResults = [], lastKeepAt = 0, lastScore = null,
     transitionUntil = 0, turnDeg = 0, lastMotionTs = null;
-// v3 audio state
-let audioSession = null, audioUnavailableReason = null,
-    scanPhase = "starting", scanCancelled = false,
-    bundleAudioBlob = null, captureStartedAt = 0;
+// Capture flow state (the pre-cut v3 audio state is gone with
+// the chirp cut — no session, no WAV, nothing to declare).
+let scanPhase = "starting", scanCancelled = false,
+    captureStartedAt = 0;
 // v3.2 initiation state (reset per scan in startScan). v3.4:
 // the initiation is aim-dot (native v1.3.6) — aimLanded marks
 // that a Set target press has landed (the Start scan door
@@ -1677,24 +1565,10 @@ function dominantFailure() {
 }
 let recentFailures = [];
 
-function audioLineText() {
-  if (!audioSession) return "Sound: starting…";
-  if (audioSession.baselineFailure) return "Sound: the checks didn't work — photos still count";
-  if (!audioSession.recording) return "Sound: unavailable — " + (audioUnavailableReason || "photos only this scan");
-  if (scanSoundMode === "silent") return "Sound: off for this scan — chirps off at setup; nothing is being recorded";
-  return "Sound: recording — a soft chirp for every photo kept";
-}
-
 function setPrompt() {
   const now = performance.now();
   let text;
-  if (scanPhase === "baseline") {
-    text = "Sound checks — hold the phone over the EMPTY table where the object will sit, and keep still. Volume up, silent switch off.";
-  } else if (scanPhase === "baseline-failed") {
-    text = (audioSession && audioSession.baselineFailure) || "The sound checks didn't work — the photos still count.";
-  } else if (scanPhase === "baseline-done") {
-    text = "Sound checks done — now put the object down and line the dot up on it.";
-  } else if (scanPhase === "initiation") {
+  if (scanPhase === "initiation") {
     // v3.4: aim-dot targeting — the dot is the target; a
     // transient aim note (working / that-didn't-take) outranks
     // the standing instruction while it stands.
@@ -1721,15 +1595,11 @@ function setPrompt() {
   }
   $("prompt").textContent = text;
   $("pass-label").textContent =
-    (scanPhase === "baseline" || scanPhase === "baseline-failed" || scanPhase === "baseline-done")
-      ? "Sound checks"
-      : scanPhase === "initiation" ? "Getting started"
+    scanPhase === "initiation" ? "Getting started"
       : (scanPhase === "scale" || scanPhase === "locking") ? "Size — optional"
       : scanPhase === "choice" ? "Almost done"
       : scanPhase === "walk2" ? "Second pass"
       : "Pass " + (passIndex + 1) + " of 2";
-  const aline = $("audio-line");
-  if (aline) aline.textContent = audioLineText();
   const total = kept.length;
   $("kept-count").textContent = total + (total === 1 ? " photo" : " photos");
   // v3.5 (W-WALK-1/2): the count-target fill bar and the
@@ -1969,23 +1839,21 @@ async function encodeOrbitFrame(src) {
 // capture (native feedbackEffects discipline). PLATFORM TRUTH:
 // iOS Safari exposes no Vibration API, so on Alan's iPhone the
 // haptic half is a no-op BY PLATFORM, not by omission — the gold
-// pulse and (chirps off) the tick still land. navigator.vibrate
+// pulse and the tick still land. navigator.vibrate
 // fires where it exists (Android Chrome).
 let tickCtx = null;
 function playUiTick(milestone) {
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    // Prefer the session's own context (already running, already
-    // the user's gesture chain); fall back to a lazily-made one.
-    let ctx = (audioSession && audioSession.ctx && audioSession.ctx.state === "running")
-      ? audioSession.ctx : null;
-    if (!ctx) {
-      if (!tickCtx) tickCtx = new AC();
-      ctx = tickCtx;
-      if (ctx.state === "suspended") { void ctx.resume().catch(() => {}); }
-      if (ctx.state !== "running") return;
-    }
+    // A lazily-made context of the sink's own (the chirp cut
+    // removed the capture session whose context this used to
+    // borrow — the tick is a UI sound, nothing more).
+    let ctx = null;
+    if (!tickCtx) tickCtx = new AC();
+    ctx = tickCtx;
+    if (ctx.state === "suspended") { void ctx.resume().catch(() => {}); }
+    if (ctx.state !== "running") return;
     const t0 = ctx.currentTime + 0.01;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -1999,7 +1867,7 @@ function playUiTick(milestone) {
   } catch (e) { /* feedback must never fail a capture */ }
 }
 function fireBankedFeedback(kind) {
-  const plan = planBankedFeedbackWeb(kind, scanSoundMode === "chirp");
+  const plan = planBankedFeedbackWeb(kind);
   if (plan.pulse) {
     const dot = $("aim-dot");
     if (dot) {
@@ -2012,8 +1880,6 @@ function fireBankedFeedback(kind) {
     try { navigator.vibrate(plan.haptic === "milestone" ? [25, 40, 25] : 15); } catch (e) { /* guarded */ }
   }
   if (plan.tone === "ui-tick") playUiTick(kind !== "banked");
-  // plan.tone === 'pose-chirp': the frame's own chirp already
-  // sounded for this exact moment — no second sound, ever.
 }
 
 // One gate attempt: draw the live frame once, score THOSE pixels
@@ -2029,11 +1895,9 @@ async function captureAttempt() {
       gateCanvas.width = video.videoWidth; gateCanvas.height = video.videoHeight;
     }
     gctx.drawImage(video, 0, 0);
-    // v3: the frame's timestamps, taken at the grab — epoch for the
-    // record, audio-context clock for the pairing with its chirp.
+    // The frame's timestamp, taken at the grab — device epoch
+    // ms, the only clock the record keeps (chirp cut).
     const grabEpoch = Date.now();
-    const grabCtx = (audioSession && audioSession.ctx && audioSession.recording)
-      ? audioSession.ctx.currentTime : null;
     const img = gctx.getImageData(0, 0, gateCanvas.width, gateCanvas.height);
     const res = gateFromGray(grayFromRGBA(img.data), gateCanvas.width, gateCanvas.height);
     attempts++;
@@ -2085,30 +1949,14 @@ async function captureAttempt() {
       width: enc.width, height: enc.height,
       diet: enc.diet || "plain",
       captured_at_epoch_ms: grabEpoch,
-      audio_offset_ms: grabCtx != null ? audioSession.offsetMs(grabCtx) : null,
-      pose_chirp_audio_offset_ms: null,
       turn_deg_est: Math.round(turnDeg),
       motion: latestMotion
     });
-    // v3: ONE chirp for this kept frame's pose (the aperture look).
-    // Fire-and-forget on the audio clock; a failure is recorded in
-    // the session and the photo is kept regardless (native parity).
-    // Sound off: never called — no emission, no recording.
-    // v3.2: the second pass (passIndex 2) emits NO pose chirps —
-    // like native's second pass it is a separate act whose frames
-    // carry no chirp pairing in the primary session record; the
-    // frames' audio offsets stay real (one recording, chirps on).
-    if (audioSession && scanSoundMode === "chirp" && passIndex < 2) {
-      const rec = audioSession.emitPoseChirp(kept.length - 1, passIndex + 1, grabEpoch);
-      const fm = frameMeta[frameMeta.length - 1];
-      fm.pose_chirp_audio_offset_ms = rec.status === "emitted" ? rec.audio_offset_ms : null;
-    }
     keptThisPass++;
     // v3.2: bank the view into the coverage model (guided sectors).
     // v3.3: a banked view is CONFIRMED — gold pulse on the aim
     // dot, a haptic where the platform has one, and the tone the
-    // plan rules (the pose chirp itself when chirps are on; a
-    // soft tick when they're off). Milestones (a part completing,
+    // plan rules (a soft UI tick). Milestones (a part completing,
     // coverage completing) get the stronger form.
     if (coverageTracker && passIndex < 2) {
       const entry = coverageTracker.offer(passIndex);
@@ -2193,7 +2041,6 @@ async function startScan() {
   passIndex = 0; keptThisPass = 0; attempts = 0; gateDropped = 0;
   lastScore = null; lastKeepAt = 0; turnDeg = 0; lastMotionTs = null;
   captureMeta = null; currentCode = newCode();
-  audioSession = null; audioUnavailableReason = null; bundleAudioBlob = null;
   scanPhase = "starting"; scanCancelled = false; captureStartedAt = Date.now();
   // v3.2 per-scan reset: initiation, scale lock, coverage,
   // second pass — and the capture screen's furniture. v3.4:
@@ -2223,38 +2070,19 @@ async function startScan() {
     if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === "function")
       await DeviceMotionEvent.requestPermission().catch(() => {});
   } catch (e) { /* metadata is optional */ }
-  // Camera + microphone in ONE request, so the audio route the
-  // session locks is the route the whole capture uses (protocol
-  // §1). Mic constraints ask for the browser's processing OFF —
-  // what was actually granted is read back and recorded.
-  // v3.5 (sound-off truth): when chirps are OFF the microphone
-  // is never requested at all — the stream asks for video only,
-  // so a sound-off scan cannot record even ambient room sound.
+  // Camera only — the chirp cut (Alan's rulings 2026-11-13 +
+  // 2026-11-14) removed sound from capture entirely, so the
+  // microphone is never requested: the stream asks for video
+  // only and no recording of any kind exists.
   const videoReq = { facingMode: "environment", width: { ideal: 2560 } };
-  if (scanSoundMode === "silent") {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: false });
-    } catch (e) {
-      stream = null;
-    }
-  } else {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: AUDIO_CONSTRAINTS_ASKED });
-    } catch (e) {
-      audioUnavailableReason = "the microphone was not allowed — photos only this scan";
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: false });
-      } catch (e2) {
-        stream = null;
-      }
-    }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoReq, audio: false });
+  } catch (e) {
+    stream = null;
   }
   if (!stream) {
     $("prompt").textContent = "The camera didn't start. Allow camera access and try again.";
     return;
-  }
-  if (scanSoundMode !== "silent" && !stream.getAudioTracks().length && !audioUnavailableReason) {
-    audioUnavailableReason = "the browser gave no microphone — photos only this scan";
   }
   try {
     // Ask for the most the camera offers (2560 wide ideal — phones
@@ -2269,43 +2097,13 @@ async function startScan() {
         streamInfo.width = $("cam").videoWidth; streamInfo.height = $("cam").videoHeight;
       }
     }
-    // v3: the chirp session — playback context up, recorder
-    // running, THEN the baseline phase, all before the first photo.
     // Label fix (2026-11-14): capture THIS scan's typed label
     // into scan state and clear the field — never persisted,
     // so the next scan's setup starts blank.
     scanLabel = currentLabel();
     { const el = $("label-input"); if (el) el.value = ""; }
-    audioSession = new WebChirpSession();
-    audioSession.soundMode = scanSoundMode;
-    if (scanSoundMode !== "silent") await audioSession.prepare(stream);
-    if (scanCancelled) return;
-    if (scanSoundMode !== "silent" && !audioSession.recording && !audioUnavailableReason) {
-      audioUnavailableReason = audioSession.recFailure || "sound recording did not start — photos only this scan";
-    }
-    if (scanSoundMode === "silent") {
-      // Sound OFF (Alan's ruling): no baseline, no chirps, and
-      // NO recording — the session was never prepared, the
-      // microphone was never requested. The initiation comes
-      // first, then the walk (v3.4: aim-dot).
-      enterInitiation();
-      return;
-    }
-    scanPhase = "baseline";
-    setPrompt();
-    const bf = await audioSession.runBaseline();
-    if (scanCancelled) return;
-    if (bf) {
-      scanPhase = "baseline-failed";
-      setPrompt();
-      await sleepMs(2400);
-      if (scanCancelled) return;
-    } else {
-      scanPhase = "baseline-done";
-      setPrompt();
-      await sleepMs(1600);
-      if (scanCancelled) return;
-    }
+    // Chirp cut: no chirp session, no baseline phase — the
+    // initiation comes first, then the walk (v3.4: aim-dot).
     enterInitiation();
   } catch (e) {
     $("prompt").textContent = "The camera didn't start. Allow camera access and try again.";
@@ -2315,13 +2113,12 @@ function stopCapture() { capturing = false; loopGen++; }
 function endCamera() {
   scanCancelled = true;
   stopCapture();
-  if (audioSession) { const s = audioSession; audioSession = null; s.stopRecording(); s.close(); }
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   $("cam").srcObject = null;
 }
 
 // ---------- initiation, scale lock, second pass ----------
-// The flow (theory §§2-5, 13): baseline (or silent) → set the
+// The flow (theory §§2-5, 13): set the
 // target → tap a known-size thing (or skip) → the lock loop
 // reads stills until three agree or the attempts run out →
 // the two-pass walk, steered by the coverage guidance → the
@@ -2735,9 +2532,7 @@ async function finishCapture() {
 }
 
 // Finish: thin an over-full scan to the target budget (sharpest per
-// slice of the walk), remap the per-pose chirps onto the final frame
-// numbering (native captureEngine behaviour), close the audio
-// session into a WAV, build the v3 manifest, hand over to Send.
+// slice of the walk), build the v3 manifest, hand over to Send.
 // v3.2: this is the PACK step — it runs only after the second-pass
 // choice (or the second pass itself). Thinning is per group: the
 // main two passes thin to TARGET_TOTAL as before; second-pass
@@ -2799,62 +2594,10 @@ async function finalizeCapture() {
   const initiationRecord = initiationData ? buildInitiationRecord(initiationData) : null;
   const coverageSnap = coverageTracker ? coverageTracker.snapshot() : null;
 
-  // Audio close-out: stop the recorder, encode the session WAV,
-  // read its rate back from its own header (never the request).
-  let audioRecord, audioSessionRecord = null, ledger = null, droppedChirps = 0;
-  if (audioSession) {
-    const sess = audioSession;
-    if (selectionDropped > 0) droppedChirps = sess.remapPoseChirps(oldToNew);
-    else {
-      // frame numbers unchanged, but keep the pairing fields exact
-      sess.poseChirps.forEach(c => { const n = oldToNew.get(c.frame_index); if (n != null) c.frame_index = n; });
-    }
-    const byFrame = new Map(sess.poseChirps.map(c => [c.frame_index, c]));
-    frameMeta.forEach(m => {
-      const c = byFrame.get(m.frame);
-      m.pose_chirp_audio_offset_ms = c && c.status === "emitted" ? c.audio_offset_ms : null;
-    });
-    const wav = sess.stopRecording();
-    if (wav) {
-      bundleAudioBlob = encodeWav16Blob(wav.samples, wav.sampleRate);
-      const actual = await wavRateFromBlob(bundleAudioBlob);
-      audioRecord = {
-        file: "audio.wav",
-        sample_rate_requested_hz: AUDIO_REQUESTED_RATE_HZ,
-        sample_rate_actual_hz: actual,
-        sample_rate_hz: actual,
-        channels: 1,
-        duration_s: Math.round((wav.samples.length / wav.sampleRate) * 1000) / 1000,
-        started_at_epoch_ms: sess.recStartEpochMs,
-        unavailable_reason: null
-      };
-    } else {
-      audioRecord = {
-        file: null,
-        sample_rate_requested_hz: AUDIO_REQUESTED_RATE_HZ,
-        sample_rate_actual_hz: null,
-        sample_rate_hz: null,
-        channels: null,
-        duration_s: null,
-        started_at_epoch_ms: sess.recStartEpochMs,
-        unavailable_reason: sess.broken
-          ? (sess.baselineFailure || "the browser would not start sound playback")
-          : (sess.recFailure || audioUnavailableReason || "the recording produced no sound samples")
-      };
-    }
-    audioSessionRecord = sess.record(droppedChirps);
-    ledger = buildEvidenceLedgerWeb(audioSessionRecord, frameMeta, v13);
-    await sess.close();
-    if (audioSession === sess) audioSession = null;
-  } else {
-    audioRecord = {
-      file: null, sample_rate_requested_hz: AUDIO_REQUESTED_RATE_HZ,
-      sample_rate_actual_hz: null, sample_rate_hz: null, channels: null,
-      duration_s: null, started_at_epoch_ms: null,
-      unavailable_reason: audioUnavailableReason || "no audio session ran"
-    };
-    ledger = buildEvidenceLedgerWeb(null, frameMeta, v13);
-  }
+  // Chirp cut: there is no audio close-out — no recorder ran,
+  // no WAV exists, and the manifest declares no audio. The
+  // evidence ledger is built at pack time (applyPruneAndPack),
+  // over the final frame list.
 
   // v3.3: the manifest + bundle are NOT built yet. The scan goes
   // to the pre-send review first (KIRI's pattern, native U6):
@@ -2865,15 +2608,13 @@ async function finalizeCapture() {
   // built at pack time, over the FINAL frame list.
   packCtx = {
     v13,
-    audioSessionRecord,
     buildArgs: {
       code: currentCode, methodId: scanMethodId, device: browserDeviceBlock(),
-      soundMode: scanSoundMode, label: scanLabel,
+      label: scanLabel,
       stream: streamInfo, locks: lockInfo, passes: passStats,
       attempts, gateDropped, pacingSkipped, selectionDropped,
       targetFrames: TARGET_TOTAL, capFrames: CAP_TOTAL, frameMaxPx: FRAME_MAX_PX,
       startedAtEpochMs: captureStartedAt, finishedAtEpochMs: Date.now(),
-      audio: audioRecord,
       initiation: initiationRecord, coverage: coverageSnap, secondPasses: secondPassesArr,
       // v3.5: the Ground Truth act's measured dimension (native
       // shape { kind, valueMm }), set by showGroundTruth when
@@ -2881,9 +2622,8 @@ async function finalizeCapture() {
       measuredDimension: null
     }
   };
-  // camera tracks stop here (the session's mic track rides the same
-  // stream); endCamera would also tear down the session, which is
-  // already closed — stop the tracks directly.
+  // Camera tracks stop here — stop them directly (endCamera
+  // would also reset the flow state the review still needs).
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   $("cam").srcObject = null;
   showReview();
@@ -2974,8 +2714,7 @@ function showGroundTruth() {
   const keepN = kept.length - reviewExcluded.size;
   const line = $("gt-status");
   if (line) line.textContent = keepN + (keepN === 1 ? " photo" : " photos") +
-    " will be packed · " + (SCAN_METHODS_WEB[scanMethodId] || {}).name +
-    (scanSoundMode === "silent" ? " · sound off — nothing recorded" : " · sound recorded");
+    " will be packed · " + (SCAN_METHODS_WEB[scanMethodId] || {}).name;
   show("groundtruth");
 }
 function confirmGroundTruth() {
@@ -2989,38 +2728,20 @@ function confirmGroundTruth() {
   applyPruneAndPack();
 }
 // Confirm the review: apply the pruning (frames renumber, the
-// dropped frames' pose chirps un-pair and count, the act is
-// recorded), then build the manifest over the final frame list
-// and pack — the v3.2 path from here, unchanged.
+// act is recorded), then build the manifest over the final
+// frame list and pack — the v3.2 path from here, unchanged.
 function applyPruneAndPack() {
   if (!packCtx) return;
   let userPruned = null;
-  let audioSessionRecord = packCtx.audioSessionRecord;
   if (reviewExcluded.size > 0) {
     const { keptIdx, pruned } = applyPruningWeb(frameMeta, reviewExcluded);
-    const oldToNew = new Map();
-    keptIdx.forEach((old, n) => oldToNew.set(old, n));
-    let poseChirpsDropped = 0;
-    if (audioSessionRecord && audioSessionRecord.pose_chirps) {
-      const remapped = remapPoseChirpRecordsWeb(audioSessionRecord.pose_chirps, oldToNew);
-      poseChirpsDropped = remapped.dropped;
-      audioSessionRecord = Object.assign({}, audioSessionRecord, {
-        pose_chirps: remapped.records,
-        aperture: audioSessionRecord.aperture ? Object.assign({}, audioSessionRecord.aperture, {
-          pose_chirps_emitted: remapped.records.filter(c => c.status === "emitted").length,
-          pose_chirps_failed: remapped.records.filter(c => c.status === "failed").length,
-          selection_dropped_chirps: (audioSessionRecord.aperture.selection_dropped_chirps || 0) + remapped.dropped
-        }) : audioSessionRecord.aperture
-      });
-    }
     kept = keptIdx.map(i => kept[i]);
     frameMeta = keptIdx.map((old, n) => Object.assign({}, frameMeta[old], { frame: n }));
-    userPruned = { count: pruned.length, frames: pruned, poseChirpsDropped };
+    userPruned = { count: pruned.length, frames: pruned };
   }
-  const ledger = buildEvidenceLedgerWeb(audioSessionRecord, frameMeta, packCtx.v13);
+  const ledger = buildEvidenceLedgerWeb(packCtx.v13);
   captureMeta = buildManifestV3(Object.assign({}, packCtx.buildArgs, {
     frames: frameMeta,
-    audioSession: audioSessionRecord,
     ledger,
     userPruned
   }));
@@ -3057,13 +2778,14 @@ $("btn-flip").onclick = () => beginSecondPass("flip");
 $("btn-bottom").onclick = () => beginSecondPass("bottom");
 $("btn-nobottom").onclick = () => { void finishCapture(); };
 
-// ---------- bundle (zip — JPEG frames stored; WAV + JSON deflated, v3.1) ----------
+// ---------- bundle (zip — JPEG frames stored; JSON deflated, v3.1) ----------
 // v3.1 bundle diet: JPEG frames are already compressed, so they stay
 // STORED (method 0) — that part of the old comment was right. But the
-// session WAV is raw PCM and the JSON docs are text; in v3 both were
-// stored raw too, and a 150 s WAV alone is ~14 MB. Those entries are
-// now DEFLATE-compressed (method 8), losslessly: extraction restores
-// every byte bit-identically (the proof harness hash-checks the WAV).
+// JSON docs are text; they are DEFLATE-compressed (method 8),
+// losslessly: extraction restores every byte bit-identically.
+// (Pre-chirp-cut bundles also carried a session WAV, deflated the
+// same way; the chirp cut removed it — Alan's rulings 2026-11-13 +
+// 2026-11-14.)
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
   for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c; }
@@ -3259,16 +2981,15 @@ async function makeZip(files) { // files: [{name, blob}]
 
 // The manifest's packing note, built from a finished pack's ACTUAL
 // per-entry methods (from lastZipReport) — never from intentions.
-function bundleCompressionNote(report, hasAudio) {
+function bundleCompressionNote(report) {
   const byName = {};
   report.entries.forEach(e => { byName[e.name] = e.method; });
   const how = name => byName[name] === 8 ? "deflated (lossless)" : "stored";
   return {
-    audio_wav: hasAudio ? how("audio.wav") : null,
     json: how("scan.json"),
     frames_jpg: "stored",
     compressor: report.compressor,
-    note: "Since v3.1 the session WAV and the JSON docs are DEFLATE-compressed inside the zip when a compressor is available and the deflated form is smaller; otherwise the entry is stored. Extraction always restores the original bytes bit-identically. JPEG frames are stored as-is (they do not compress further). A stored audio_wav means this browser had no working compressor, or deflate did not shrink the recording."
+    note: "Since v3.1 the JSON docs are DEFLATE-compressed inside the zip when a compressor is available and the deflated form is smaller; otherwise the entry is stored. Extraction always restores the original bytes bit-identically. JPEG frames are stored as-is (they do not compress further)."
   };
 }
 
@@ -3284,12 +3005,9 @@ async function buildBundle() {
   // the scale still is the lock's first-read evidence.
   if (initiationBlob) files.push({ name: "initiation.jpg", blob: initiationBlob });
   if (scaleBlob) files.push({ name: "scale-still.jpg", blob: scaleBlob });
-  // v3: the session sound recording rides in the bundle as
-  // audio.wav — the same bundle shape the native app produces.
-  if (bundleAudioBlob) files.push({ name: "audio.wav", blob: bundleAudioBlob });
   const meta = captureMeta || { code: currentCode, paper: "LETTER", n_frames: kept.length,
                  pipeline: "browser-web", frames_meta: frameMeta,
-                 made_with: "Scan the World test app v3.7 (web capture)" };
+                 made_with: "Scan the World test app v3.8 (web capture)" };
   const doc = JSON.stringify(meta, null, 2);
   files.push({ name: "scan.json", blob: new Blob([doc], { type: "application/json" }) });
   files.push({ name: "manifest.json", blob: new Blob([doc], { type: "application/json" }) });
@@ -3298,12 +3016,11 @@ async function buildBundle() {
     // The manifest states how this bundle was actually packed
     // (bundle_compression) — knowable only after a first pack, so
     // pack, record the note in the manifest, and pack again with the
-    // note inside. The second pack reuses the cached WAV compression
-    // and is cheap. The methods the note reports are the methods the
+    // note inside. The methods the note reports are the methods the
     // first pack used; the second pack takes the identical code path
     // on identical entries (only the JSON text gained the note).
     if (lastZipReport) {
-      meta.bundle_compression = bundleCompressionNote(lastZipReport, !!bundleAudioBlob);
+      meta.bundle_compression = bundleCompressionNote(lastZipReport);
       const doc2 = JSON.stringify(meta, null, 2);
       files[files.length - 2] = { name: "scan.json", blob: new Blob([doc2], { type: "application/json" }) };
       files[files.length - 1] = { name: "manifest.json", blob: new Blob([doc2], { type: "application/json" }) };
@@ -3319,7 +3036,7 @@ async function buildBundle() {
   bundleName = "scan-" + currentCode + ".zip";
   const mb = (bundleBlob.size / 1048576).toFixed(1);
   $("bundle-size").textContent = "One file, about " + mb + " MB" +
-    (bundleAudioBlob ? " (photos + sound recording)" : " (photos only — no sound recording this time)") +
+    " (photos only)" +
     ". Fine to send on mobile data.";
   const scans = loadScans(); scans.push({ code: currentCode, ts: Date.now() }); saveScans(scans); renderScanList();
   $("btn-share").disabled = false;
@@ -3538,7 +3255,7 @@ $("btn-back").onclick = () => { renderScanList(); show("home"); };
 // ---------- boot ----------
 renderScanList();
 renderMethodSeg();
-renderSoundSeg();
+try { localStorage.removeItem("stw-sound-v3"); } catch (e) { /* ignore */ }
 initShapeSeg();
 initLabelField();
 if ("serviceWorker" in navigator && location.protocol === "https:") {
