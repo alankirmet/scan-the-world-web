@@ -1037,7 +1037,7 @@ function buildManifestV3(info) {
     n_frames: info.frames.length,
     made_with: "Scan the World test app v3.5 (web capture — chirp-enabled browser pipeline)",
     pipeline: "browser-web",
-    app: { name: "Scan the World test app (web)", version: "3.7", build: 10, platform: "browser-web" },
+    app: { name: "Scan the World test app (web)", version: "3.7.1", build: 11, platform: "browser-web" },
     method: { id: method.id, name: method.name, points: method.points },
     device: info.device,
     // v1.3 initiation blocks (native manifest placement: they
@@ -1493,19 +1493,29 @@ function renderMethodSeg() {
 // app-integration round): which coverage plan the walk follows
 // and — the point of the exercise — the shape the bundle
 // DECLARES in coverage.coverage_plan for the serving pipeline.
-// Persisted like the method; default 'sides' (the pre-v3.7
-// behaviour for anyone who never touches it).
-let scanShapeId = "sides";
-try {
-  const savedShape = localStorage.getItem("stw-shape-v1");
-  if (savedShape && COVERAGE_PLANS_WEB[savedShape]) scanShapeId = savedShape;
-} catch (e) { /* private mode etc. — default stands */ }
+// Declaration fix (2026-11-14, Alan's only rule applied to the
+// label-fix audit): a shape is a construction-feeding
+// declaration, so like the label it is THIS scan's only —
+// never persisted, never pre-filled. scanShapeId starts null
+// (UNDECLARED; the seg shows nothing picked); picking a shape
+// sets it for the next scan only, and startScan consumes it
+// (the tracker is built from it, then it clears). A scan
+// started with nothing picked runs the standing default plan
+// ('sides' — the pre-v3.7 behaviour) and declares that,
+// exactly as a first-ever scan does. Pre-fix the choice
+// persisted in localStorage under stw-shape-v1 and pre-picked
+// the next scan's seg; the key is now only deleted on sight.
+let scanShapeId = null;
+function initShapeSeg() {
+  try { localStorage.removeItem("stw-shape-v1"); } catch (e) { /* ignore */ }
+  scanShapeId = null;
+  renderShapeSeg();
+}
 function renderShapeSeg() {
   document.querySelectorAll("#shape-seg .seg-btn").forEach(b => {
     b.classList.toggle("active", b.dataset.shape === scanShapeId);
     b.onclick = () => {
       scanShapeId = b.dataset.shape;
-      try { localStorage.setItem("stw-shape-v1", scanShapeId); } catch (e) { /* ignore */ }
       renderShapeSeg();
     };
   });
@@ -2193,6 +2203,10 @@ async function startScan() {
   initiationData = null; scaleMachine = null; scalePointNorm = null;
   initiationBlob = null; scaleBlob = null;
   coverageTracker = new CoverageTracker(scanShapeId);
+  // Declaration fix (2026-11-14): the shape declared for THIS
+  // scan is consumed — the tracker above was built from it;
+  // the seg now clears, so the next scan starts undeclared.
+  scanShapeId = null; renderShapeSeg();
   pacingSkipped = 0; tapBusy = false; lockAttempts = 0;
   aimLanded = false; aimNote = null; pendingInitiation = null;
   aimChainSeq++; undersideAnnounced = false;
@@ -3525,7 +3539,7 @@ $("btn-back").onclick = () => { renderScanList(); show("home"); };
 renderScanList();
 renderMethodSeg();
 renderSoundSeg();
-renderShapeSeg();
+initShapeSeg();
 initLabelField();
 if ("serviceWorker" in navigator && location.protocol === "https:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
